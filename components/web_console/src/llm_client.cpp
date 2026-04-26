@@ -371,14 +371,8 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
     int read_len = esp_http_client_read(client, response_buf, content_length);
     if (read_len > 0) {
         response_buf[read_len] = '\0';
-        ESP_LOGI(TAG, "HTTP response body (%d bytes):", read_len);
-        ESP_LOGI(TAG, "%.1024s", response_buf);
-        if (read_len > 1024) {
-            ESP_LOGI(TAG, "--- TRUNCATED, %d more bytes ---", read_len - 1024);
-        }
     } else {
         response_buf[0] = '\0';
-        ESP_LOGW(TAG, "HTTP response body: empty (read_len=%d)", read_len);
     }
 
     esp_http_client_cleanup(client);
