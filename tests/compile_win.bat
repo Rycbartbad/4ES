@@ -1,0 +1,36 @@
+@echo off
+REM Windows x86 compilation for ESP-LEGO unit tests
+REM Requires: MinGW g++ or MSVC cl.exe with C++17 support
+REM
+REM Include path order is CRITICAL:
+REM   -Itests/mocks MUST come first so mock sdkconfig.h, esp_log.h,
+REM                freertos/*.h, esp_now.h etc. are found before real ESP-IDF ones.
+REM   -Icomponents/*/include comes second for real component headers.
+
+set INC=-Itests/mocks -Icomponents/interpreter/include -Icomponents/espnow_comm/include -Icomponents/hw_drivers/include
+set SRC=tests/main.cpp ^
+  tests/test_stubs.cpp ^
+  tests/mocks/comm_stubs.cpp ^
+  components/interpreter/src/lexer.cpp ^
+  components/interpreter/src/parser.cpp ^
+  components/interpreter/src/interpreter.cpp ^
+  components/interpreter/src/ast.cpp ^
+  components/interpreter/src/environment.cpp ^
+  components/interpreter/src/intern.cpp ^
+  components/interpreter/src/builtins.cpp ^
+  components/espnow_comm/src/peer_mgr.cpp ^
+  components/espnow_comm/src/protocol.cpp
+
+echo Compiling ESP-LEGO unit tests...
+g++ -std=c++17 -Wall -Wno-unused-function -Wno-unused-variable %INC% %SRC% -o tests/test_runner.exe 2>&1
+
+if %ERRORLEVEL% equ 0 (
+    echo.
+    echo COMPILATION OK
+    echo.
+    tests\test_runner.exe
+) else (
+    echo.
+    echo COMPILATION FAILED
+    exit /b 1
+)

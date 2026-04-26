@@ -1,0 +1,19 @@
+menu "ESP-LEGO Device Role"
+
+choice DEVICE_ROLE
+    prompt "Device role"
+    default DEVICE_ROLE_MASTER
+    help
+        Select the firmware role for this ESP32-S3 board.
+        Master: full script interpreter + ESP-NOW peer manager.
+        Sensor: lite ESP-NOW slave (announce + command response).
+
+config DEVICE_ROLE_MASTER
+    bool "Master (interpreter + ESP-NOW manager)"
+
+config DEVICE_ROLE_SENSOR
+    bool "Sensor (ESP-NOW slave)"
+
+endchoice
+
+endmenu
