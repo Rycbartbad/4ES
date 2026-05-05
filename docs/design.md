@@ -808,7 +808,7 @@ app_main()
 ├── web_console_init()          // SoftAP + HTTP 服务器（若 CONFIG_WEB_CONSOLE_ENABLED）
 │   ├── 首次启动/未配网 → 自动创建 ESP-LEGO-Setup 热点
 │   ├── 长按 BOOT 键 (GPIO 0, 3 秒) → 手动进入配置模式
-│   └── web_console_task 内处理 HTTP 请求: /, /api/config, /api/ai, /api/scan, /api/exec_log, /api/script
+│   └── web_console_task 内处理 HTTP 请求: /, /api/config, /api/config/wifi, /api/config/llm, /api/ai, /api/scan, /api/exec_log, /api/script
 │
 └── [SENSOR 固件: announce_task + hw_control]
 ```
@@ -1443,14 +1443,15 @@ components/web_console/
 |------|------|------|-----------|
 | `/` | GET | 返回静态 HTML 配置页面 | HTML (含内联 CSS/JS, 无外部依赖) |
 | `/api/status` | GET | 当前系统状态 | `{"peers": N, "wifi_configured": bool, "llm_configured": bool, "script_running": bool}` |
-| `/api/config` | GET | 获取当前配置 | `{"wifi_ssid":"...", "llm_url":"...", "llm_model":"..."}` (不含 key) |
-| `/api/config` | POST | 保存配置到 NVS | 表单字段: `wifi_ssid, wifi_pass, llm_url, llm_key, llm_model` |
+| `/api/config` | GET | 获取当前完整配置 | `{"wifi_ssid":"...", "wifi_configured":bool, "llm_url":"...", "llm_model":"..."}` (key 字段用 `"***"` 掩码, `wifi_pass` 不返回) |
+| `/api/config/wifi` | POST | 仅保存 WiFi 配置到 NVS | 表单字段: `wifi_ssid, wifi_pass` |
+| `/api/config/llm` | POST | 仅保存 LLM 配置到 NVS | 表单字段: `llm_url, llm_key, llm_model` |
 | `/api/scan` | GET | 扫描附近 Wi-Fi | `[{"ssid":"...","rssi":-50}, ...]` (按 RSSI 降序, 去重) |
 | `/api/ai` | POST | 自然语言 → LLM → 脚本执行 | `{"prompt":"每 5 秒读温度"}` → `{"status":"ok","script":"...", "log":"..."}` |
 | `/api/script` | POST | 直接注入脚本 | `{"script":"while(true){...}"}` → 中止当前脚本 + 执行新脚本 |
 | `/api/exec_log` | GET | 获取 print 输出日志 | `{"lines":["temp=25.3","fan=on",...]}` (环形缓冲区最近 N 条) |
 
-> **API Key 安全**: `/api/config` POST 接受 `llm_key` 字段并写入 NVS，但 GET 响应中**不返回** key 值（仅返回 `"***"` 掩码），防止通过浏览器查看已保存的密钥。
+> **API Key 安全**: 仅 `/api/config/llm` POST 接受 `llm_key` 字段并写入 NVS，`/api/config/wifi` POST **不接受** `llm_key`，从根本上避免 WiFi 配置操作意外接触 API key。GET `/api/config` 响应中**不返回** key 值（仅返回 `"***"` 掩码），`wifi_pass` **不返回**（写入后不可读），防止通过浏览器查看已保存的密钥。
 
 ### 16.4 SoftAP 与配置模式入口
 
@@ -1694,11 +1695,11 @@ endmenu
 
 | 键名 | 类型 | 说明 | 写入路径 |
 |------|------|------|----------|
-| `wifi_ssid` | 字符串 | 目标路由器 SSID | `/api/config` POST |
-| `wifi_pass` | 字符串 | 目标路由器密码 | `/api/config` POST |
-| `llm_url` | 字符串 | LLM API Base URL (如 `https://api.openai.com/v1`) | `/api/config` POST |
-| `llm_key` | 字符串 | LLM API Key | `/api/config` POST |
-| `llm_model` | 字符串 | LLM 模型名称 (如 `gpt-4o-mini`) | `/api/config` POST |
+| `wifi_ssid` | 字符串 | 目标路由器 SSID | `/api/config/wifi` POST |
+| `wifi_pass` | 字符串 | 目标路由器密码 | `/api/config/wifi` POST |
+| `llm_url` | 字符串 | LLM API Base URL (如 `https://api.openai.com/v1`) | `/api/config/llm` POST |
+| `llm_key` | 字符串 | LLM API Key | `/api/config/llm` POST |
+| `llm_model` | 字符串 | LLM 模型名称 (如 `gpt-4o-mini`) | `/api/config/llm` POST |
 
 ### 16.11 边界与异常处理
 

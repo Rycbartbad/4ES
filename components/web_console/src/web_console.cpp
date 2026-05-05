@@ -8,8 +8,8 @@
  * Implements:
  *   - SoftAP hotspot ("ESP-LEGO-Setup", no password)
  *   - HTTP server on 192.168.4.1 (port 80)
- *   - All API routes: /, /api/config, /api/status, /api/scan,
- *     /api/ai, /api/script, /api/exec_log
+ *   - All API routes: /, /api/config, /api/config/wifi, /api/config/llm,
+ *     /api/status, /api/scan, /api/ai, /api/script, /api/exec_log
  *   - Static HTML page (inline CSS/JS, no external dependencies)
  *   - NVS config persistence (namespace "web_console")
  *   - Inactivity timeout (CONFIG_WEB_CONSOLE_TIMEOUT_SEC)
@@ -241,7 +241,7 @@ static const char* s_html_page =
 "<label>Password</label>"
 "<input id=\"wifi_pass\" type=\"password\" placeholder=\"Wi-Fi password\">"
 "<div class=\"btn-row\">"
-"<button class=\"btn-primary\" onclick=\"saveConfig()\">Save</button>"
+"<button class=\"btn-primary\" onclick=\"saveWifiConfig()\">Save</button>"
 "<button class=\"btn-secondary\" onclick=\"scanWifi()\" id=\"scanBtn\">Scan</button>"
 "</div>"
 "<div id=\"scanResults\" class=\"scan-list\" style=\"display:none\"></div>"
@@ -260,7 +260,7 @@ static const char* s_html_page =
 "<label>Model</label>"
 "<input id=\"llm_model\" placeholder=\"gpt-4o-mini\">"
 "<div class=\"btn-row\">"
-"<button class=\"btn-primary\" onclick=\"saveConfig()\">Save</button>"
+"<button class=\"btn-primary\" onclick=\"saveLlmConfig()\">Save</button>"
 "</div>"
 "<div class=\"info\">OpenAI-compatible endpoint. Key stored in device flash.</div>"
 "</div>"
@@ -319,16 +319,22 @@ static const char* s_html_page =
 "  return r.json()"
 " }catch(e){msg('Fetch error: '+e.message,'err');return null}"
 "}"
-"async function saveConfig(){"
+"async function saveWifiConfig(){"
 " var body={"
 "  wifi_ssid:$('wifi_ssid').value,"
-"  wifi_pass:$('wifi_pass').value,"
+"  wifi_pass:$('wifi_pass').value"
+" };"
+" var r=await apiFetch('/api/config/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});"
+" if(r&&r.wifi_status)msg('WiFi saved, status: '+r.wifi_status,'ok');else if(r)msg('WiFi saved','ok')"
+"}"
+"async function saveLlmConfig(){"
+" var body={"
 "  llm_url:$('llm_url').value,"
 "  llm_key:$('llm_key').value,"
 "  llm_model:$('llm_model').value"
 " };"
-" var r=await apiFetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});"
-" if(r)msg('Config saved','ok')"
+" var r=await apiFetch('/api/config/llm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});"
+" if(r)msg('LLM config saved','ok')"
 "}"
 "async function loadConfig(){"
 " var r=await apiFetch('/api/config');"
@@ -611,9 +617,10 @@ static esp_err_t config_get_handler(httpd_req_t* req)
     return ESP_OK;
 }
 
-// ---- POST /api/config ----
+// ---- POST /api/config/wifi ----
+// Accepts only wifi_ssid, wifi_pass. Ignores all unrelated fields (llm_key etc.).
 
-static esp_err_t config_post_handler(httpd_req_t* req)
+static esp_err_t config_wifi_post_handler(httpd_req_t* req)
 {
     reset_inactivity_timer();
 
@@ -643,21 +650,7 @@ static esp_err_t config_post_handler(httpd_req_t* req)
         nvs_set_str_safe("wifi_pass", item->valuestring);
     }
 
-    item = cJSON_GetObjectItem(root, "llm_url");
-    if (item && item->valuestring) {
-        nvs_set_str_safe("llm_url", item->valuestring);
-    }
-
-    item = cJSON_GetObjectItem(root, "llm_key");
-    if (item && item->valuestring) {
-        nvs_set_str_safe("llm_key", item->valuestring);
-    }
-
-    item = cJSON_GetObjectItem(root, "llm_model");
-    if (item && item->valuestring) {
-        nvs_set_str_safe("llm_model", item->valuestring);
-    }
-
+    // Deliberately ignore llm_key, llm_url, llm_model — domain isolation
     cJSON_Delete(root);
 
     // After saving WiFi credentials, trigger STA connection automatically
@@ -670,7 +663,7 @@ static esp_err_t config_post_handler(httpd_req_t* req)
     cJSON_AddStringToObject(resp, "status", "ok");
 
     if (strlen(wifi_ssid) > 0) {
-        ESP_LOGI(TAG, "WiFi config saved — initiating STA connection to %s", wifi_ssid);
+        ESP_LOGI(TAG, "WiFi saved — connecting to %s", wifi_ssid);
         esp_err_t err = wifi_connect_sta(wifi_ssid, wifi_pass);
         if (err == ESP_OK) {
             cJSON_AddStringToObject(resp, "wifi_status", "connecting");
@@ -679,6 +672,72 @@ static esp_err_t config_post_handler(httpd_req_t* req)
         }
     }
 
+    char* json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+
+    if (json) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, json);
+        free(json);
+    } else {
+        httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    }
+    return ESP_OK;
+}
+
+// ---- POST /api/config/llm ----
+// Accepts only llm_url, llm_key, llm_model. Ignores wifi_ssid/wifi_pass.
+
+static esp_err_t config_llm_post_handler(httpd_req_t* req)
+{
+    reset_inactivity_timer();
+
+    char buf[1024];
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    cJSON* root = cJSON_Parse(buf);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON* item;
+    bool llm_updated = false;
+
+    item = cJSON_GetObjectItem(root, "llm_url");
+    if (item && item->valuestring) {
+        nvs_set_str_safe("llm_url", item->valuestring);
+        llm_updated = true;
+    }
+
+    item = cJSON_GetObjectItem(root, "llm_key");
+    if (item && item->valuestring) {
+        nvs_set_str_safe("llm_key", item->valuestring);
+        llm_updated = true;
+    }
+
+    item = cJSON_GetObjectItem(root, "llm_model");
+    if (item && item->valuestring) {
+        nvs_set_str_safe("llm_model", item->valuestring);
+        llm_updated = true;
+    }
+
+    // Deliberately ignore wifi_ssid, wifi_pass — domain isolation
+    cJSON_Delete(root);
+
+    if (llm_updated) {
+        ESP_LOGI(TAG, "LLM config saved to NVS (url/key/model)");
+    } else {
+        ESP_LOGW(TAG, "LLM config POST had no recognised fields");
+    }
+
+    cJSON* resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "ok");
     char* json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
 
@@ -1020,8 +1079,9 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/mtuprobe",   .method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
     { .uri = "/favicon.ico",.method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
     { .uri = "/api/status",  .method = HTTP_GET,    .handler = status_get_handler,      .user_ctx = NULL },
-    { .uri = "/api/config",  .method = HTTP_GET,    .handler = config_get_handler,      .user_ctx = NULL },
-    { .uri = "/api/config",  .method = HTTP_POST,   .handler = config_post_handler,     .user_ctx = NULL },
+    { .uri = "/api/config",      .method = HTTP_GET,    .handler = config_get_handler,          .user_ctx = NULL },
+    { .uri = "/api/config/wifi", .method = HTTP_POST,   .handler = config_wifi_post_handler,    .user_ctx = NULL },
+    { .uri = "/api/config/llm",  .method = HTTP_POST,   .handler = config_llm_post_handler,     .user_ctx = NULL },
     { .uri = "/api/wifi/connect", .method = HTTP_POST, .handler = wifi_connect_post_handler, .user_ctx = NULL },
     { .uri = "/api/scan",    .method = HTTP_GET,    .handler = scan_get_handler,        .user_ctx = NULL },
     { .uri = "/api/ai",      .method = HTTP_POST,   .handler = ai_post_handler,         .user_ctx = NULL },

@@ -77,11 +77,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        // Auto-reconnect succeeded — update state immediately
+        // WiFi association succeeded — update state but do NOT signal
+        // the event group yet.  We wait for IP_EVENT_STA_GOT_IP (DHCP)
+        // so that the HTTP client has a valid IP to bind to.
         s_sta_connected = true;
-        if (s_wifi_event_group) {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        }
         wifi_event_sta_connected_t* info = (wifi_event_sta_connected_t*)event_data;
         (void)info;
         ESP_LOGI(TAG, "STA Connected event: channel=%d", info->channel);
@@ -253,66 +252,31 @@ static int probe_dns(const char* hostname)
     return 0;
 }
 
-// ====================================================================
-// Ping test — TCP connect to 8.8.8.8:80 to verify STA internet connectivity.
-// If this succeeds, STA has internet access (even if DNS fails).
-// ====================================================================
+// Context passed to http_event_handler for collecting response data
+typedef struct {
+    char* buf;
+    int   max_len;
+    int   written;
+} http_body_ctx_t;
 
-static void ping_test(void)
+// Event handler — captures body chunks during esp_http_client_perform().
+// This is the *only* reliable way to read chunked transfer-encoded
+// responses in ESP-IDF v5.2 (esp_http_client_read() after perform()
+// returns 0 because the internal buffer was already consumed).
+static esp_err_t http_event_handler(esp_http_client_event_t* evt)
 {
-    ESP_LOGI(TAG, "Ping: testing TCP connectivity to 8.8.8.8:80");
-
-    // Get STA netif by lwIP name
-    struct netif* sta_n = netif_find("st0");
-    ESP_LOGI(TAG, "Ping: netif_find(st0) -> %p", (void*)sta_n);
-    if (sta_n) {
-        ESP_LOGI(TAG, "Ping: STA netif flags=0x%04x ip=" IPSTR " gw=" IPSTR,
-                 sta_n->flags, IP2STR(ip_2_ip4(&sta_n->ip_addr)), IP2STR(ip_2_ip4(&sta_n->gw)));
+    http_body_ctx_t* ctx = (http_body_ctx_t*)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        int copy = evt->data_len;
+        if (ctx->written + copy > ctx->max_len - 1) {
+            copy = ctx->max_len - 1 - ctx->written;
+        }
+        if (copy > 0 && evt->data) {
+            memcpy(ctx->buf + ctx->written, evt->data, (size_t)copy);
+            ctx->written += copy;
+        }
     }
-
-    // Get AP netif by lwIP name
-    struct netif* ap_n = netif_find("ap0");
-    ESP_LOGI(TAG, "Ping: netif_find(ap0) -> %p", (void*)ap_n);
-    if (ap_n) {
-        ESP_LOGI(TAG, "Ping: AP netif flags=0x%04x ip=" IPSTR " gw=" IPSTR,
-                 ap_n->flags, IP2STR(ip_2_ip4(&ap_n->ip_addr)), IP2STR(ip_2_ip4(&ap_n->gw)));
-    }
-
-    // Get STA netif handle
-    esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    ESP_LOGI(TAG, "Ping: sta_netif handle=%p", (void*)sta_netif);
-
-    if (sta_netif) {
-        esp_netif_ip_info_t ip_info;
-        esp_netif_get_ip_info(sta_netif, &ip_info);
-        ESP_LOGI(TAG, "Ping: STA IP=" IPSTR " GW=" IPSTR " netmask=" IPSTR,
-                 IP2STR(&ip_info.ip), IP2STR(&ip_info.gw), IP2STR(&ip_info.netmask));
-    }
-
-    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) {
-        ESP_LOGW(TAG, "Ping: socket() failed errno=%d", errno);
-        return;
-    }
-
-    if (sta_netif) {
-        esp_netif_set_default_netif(sta_netif);
-    }
-
-    struct sockaddr_in dest = {};
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(80);
-    dest.sin_addr.s_addr = PP_HTONL(0x08080808UL);  // 8.8.8.8
-
-    int rc = connect(sock, (struct sockaddr*)&dest, sizeof(dest));
-    int err = errno;
-    ESP_LOGI(TAG, "Ping: TCP connect to 8.8.8.8:80 -> ret=%d errno=%d", rc, err);
-    if (rc == 0) {
-        ESP_LOGI(TAG, "Ping: TCP connect SUCCESS");
-    } else {
-        ESP_LOGW(TAG, "Ping: TCP connect FAILED (errno=%d)", err);
-    }
-    close(sock);
+    return ESP_OK;
 }
 
 // ====================================================================
@@ -323,6 +287,13 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
                                  const char* json_body,
                                  char* response_buf, int response_max)
 {
+    // Prepare response collector
+    http_body_ctx_t body_ctx = {
+        .buf     = response_buf,
+        .max_len = response_max,
+        .written = 0
+    };
+
     esp_http_client_config_t config = {};
     config.url               = url;
     config.method            = HTTP_METHOD_POST;
@@ -330,6 +301,8 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
     config.buffer_size       = 4096;
     config.buffer_size_tx    = 2048;
     config.crt_bundle_attach  = esp_crt_bundle_attach;
+    config.event_handler      = http_event_handler;
+    config.user_data          = &body_ctx;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
@@ -346,7 +319,7 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
     // Set body
     esp_http_client_set_post_field(client, json_body, (int)strlen(json_body));
 
-    // Perform request
+    // Perform request (body_ctx.buf is filled by event_handler during this call)
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP request failed: %d %s", err, esp_err_to_name(err));
@@ -358,24 +331,15 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
     int status_code = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "HTTP status: %d", status_code);
 
+    response_buf[body_ctx.written] = '\0';
+    ESP_LOGD(TAG, "Response body: %d bytes received", body_ctx.written);
+
+    esp_http_client_cleanup(client);
+
     if (status_code != 200) {
-        esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
 
-    int content_length = esp_http_client_get_content_length(client);
-    if (content_length > response_max - 1) {
-        content_length = response_max - 1;
-    }
-
-    int read_len = esp_http_client_read(client, response_buf, content_length);
-    if (read_len > 0) {
-        response_buf[read_len] = '\0';
-    } else {
-        response_buf[0] = '\0';
-    }
-
-    esp_http_client_cleanup(client);
     return ESP_OK;
 }
 
@@ -547,14 +511,22 @@ int llm_client_call(const char* ssid, const char* pass,
         ESP_LOGI(TAG, "STA already connected — reusing connection");
     }
 
-    // Ensure public DNS is set (in case GOT_IP was missed or STA was
-    // pre-connected before this session's event handler ran).
+    // CRITICAL: Force STA as default netif on EVERY call.
+    // esp_netif_set_default_netif() is only called inside do_sta_connect()'s
+    // GOT_IP handler — which runs ONCE. On subsequent calls (STA already
+    // connected), do_sta_connect() is skipped, so the default netif can drift
+    // to AP after any WiFi traffic. Without this, getaddrinfo() routes through
+    // the wrong interface and returns EAI_FAIL errno=202.
+    // Use esp_netif_get_handle_from_ifkey() instead of netif_find("st0") —
+    // raw lwIP netif_find() breaks after mode switches increment interface
+    // number (confirmed ESP-IDF bug #16742).
     {
-        ip_addr_t dns_addr;
-        IP_ADDR4(&dns_addr, 8, 8, 8, 8);
-        dns_setserver(0, &dns_addr);
-        IP_ADDR4(&dns_addr, 8, 8, 4, 4);
-        dns_setserver(1, &dns_addr);
+        esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta_netif) {
+            esp_netif_set_default_netif(sta_netif);
+        } else {
+            ESP_LOGW(TAG, "STA netif handle unavailable");
+        }
     }
 
     // ---- 2. Build system prompt ----
@@ -608,17 +580,20 @@ int llm_client_call(const char* ssid, const char* pass,
     }
 
     // ---- 4. HTTP POST (STA already connected) ----
-    // Ensure public DNS is set (in case GOT_IP was missed or STA was
-    // pre-connected before this session's event handler ran).
-    {
-        ip_addr_t dns_addr;
-        IP_ADDR4(&dns_addr, 8, 8, 8, 8);
-        dns_setserver(0, &dns_addr);
-        IP_ADDR4(&dns_addr, 8, 8, 4, 4);
-        dns_setserver(1, &dns_addr);
-    }
-    ESP_LOGI(TAG, "STA DNS check: global_dns[0]=" IPSTR,
+    // Log current DNS (diagnostic only — DNS comes from GOT_IP handler via DHCP).
+    ESP_LOGI(TAG, "STA DNS: " IPSTR,
              IP2STR(&dns_getserver(0)->u_addr.ip4));
+
+    // Force STA as default netif before DNS probe and HTTP request.
+    // GOT_IP handler only runs once on first connection. On subsequent calls,
+    // do_sta_connect() is skipped and the default netif can drift to AP,
+    // causing getaddrinfo() to route through the wrong interface → EAI_FAIL.
+    {
+        esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta_netif) {
+            esp_netif_set_default_netif(sta_netif);
+        }
+    }
 
     // Probe DNS for the target hostname before attempting HTTP
     // Extract hostname from full URL for the probe
@@ -638,9 +613,7 @@ int llm_client_call(const char* ssid, const char* pass,
     ESP_LOGI(TAG, "Probing DNS for: %s", hostname_buf);
     probe_dns(hostname_buf);
 
-    ping_test();
-
-    char response[2048];
+    char response[4096];
     esp_err_t http_err = http_post_json(full_url,
                           auth_header[0] ? auth_header : NULL,
                           json_body, response, sizeof(response));
@@ -653,9 +626,11 @@ int llm_client_call(const char* ssid, const char* pass,
     }
 
     // ---- 5. Parse JSON response ----
+    ESP_LOGD(TAG, "Raw response (%d bytes): %s", (int)strlen(response), response);
     cJSON* resp_root = cJSON_Parse(response);
     if (resp_root == NULL) {
-        ESP_LOGE(TAG, "Failed to parse LLM response JSON");
+        ESP_LOGE(TAG, "Failed to parse LLM response JSON (%d bytes received)",
+                 (int)strlen(response));
         return -1;
     }
 

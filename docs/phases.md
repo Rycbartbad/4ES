@@ -503,11 +503,15 @@ components/web_console/
   - 页面包含：WiFi SSID/密码表单、LLM Base URL/Key/Model 表单、设备列表显示、AI 指令输入框、执行日志面板
 - [ ] **P7.5.5** `web_console.h/cpp`：实现软重启回调（LLM 调用前暂停 HTTP 服务器）
 
-#### S2: `/api/config` 保存/读取 NVS (0.5d)
+#### S2a: `/api/config/wifi` 保存 WiFi 配置 (0.25d)
 
-- [ ] **P7.5.6** `web_console.h/cpp`：HTTP POST `/api/config` — 解析表单字段，写入 NVS（`wifi_ssid`, `wifi_pass`, `llm_url`, `llm_key`, `llm_model`）
-- [ ] **P7.5.7** `web_console.h/cpp`：HTTP GET `/api/config` — 从 NVS 读取配置返回 JSON（key 用 `"***"` 掩码）
-- [ ] **P7.5.8** `web_console.h/cpp`：HTTP GET `/api/status` — 返回系统状态（peer 数量、配网状态、脚本运行状态）
+- [ ] **P7.5.6** `web_console.h/cpp`：HTTP POST `/api/config/wifi` — 仅解析 `wifi_ssid`, `wifi_pass`，写入 NVS；**不接受 `llm_key` 等不相关字段**
+- [ ] **P7.5.7** `web_console.h/cpp`：HTTP GET `/api/config` — 从 NVS 读取完整配置返回 JSON（key 用 `"***"` 掩码，`wifi_pass` 不返回）
+
+#### S2b: `/api/config/llm` 保存 LLM 配置 (0.25d)
+
+- [ ] **P7.5.8** `web_console.h/cpp`：HTTP POST `/api/config/llm` — 仅解析 `llm_url`, `llm_key`, `llm_model`，写入 NVS；**不接受 `wifi_ssid`/`wifi_pass` 等不相关字段**
+- [ ] **P7.5.9** `web_console.h/cpp`：HTTP GET `/api/status` — 返回系统状态（peer 数量、配网状态、脚本运行状态）
 
 #### S3: `/api/scan` Wi-Fi 扫描 (0.5d)
 
@@ -549,7 +553,9 @@ components/web_console/
 | TC-P7.5.1 | SoftAP 可见 | 烧录未配网固件，手机扫描 Wi-Fi | 可见 `ESP-LEGO-Setup` 热点 |
 | TC-P7.5.2 | 页面可访问 | 手机连热点，打开 http://192.168.4.1 | 配置页面渲染正常，无外部资源加载失败 |
 | TC-P7.5.3 | Wi-Fi 扫描 | 点击页面"扫描"按钮 | 返回附近 2.4GHz SSID 列表，按信号强度排序 |
-| TC-P7.5.4 | 配置保存 | 填写 WiFi/LLM 信息，提交 | NVS `wifi_ssid` / `llm_url` 等键值写入成功 |
+| TC-P7.5.4 | WiFi 配置独立保存 | 仅填写 WiFi SSID/密码，提交到 `/api/config/wifi` | NVS `wifi_ssid`/`wifi_pass` 写入成功，`llm_key`/`llm_url` 不变 |
+| TC-P7.5.4a | LLM 配置独立保存 | 仅填写 LLM URL/Key/Model，提交到 `/api/config/llm` | NVS `llm_url`/`llm_key`/`llm_model` 写入成功，`wifi_ssid`/`wifi_pass` 不变 |
+| TC-P7.5.4b | 配置域隔离 | 提交 `/api/config/wifi` 时附带 `llm_key` 字段 | 服务端忽略 `llm_key`，不写入 NVS |
 | TC-P7.5.5 | LLM 调用 | 输入"每 5 秒读温度"，点击生成 | LLM 返回脚本，注入执行，print 输出在日志面板显示 |
 | TC-P7.5.6 | 持续执行 | TC-P7.5.5 生成的脚本包含 `while(true)` | 脚本持续运行，日志不断更新 |
 | TC-P7.5.7 | 脚本切换 | 脚本 A 运行中，输入新指令 | A 中止，A 的输出引脚复位，B 立即开始执行 |
@@ -561,7 +567,7 @@ components/web_console/
 
 - **WiFi 模式切换复杂性**: SoftAP ↔ STA 切换涉及 Wi-Fi 驱动的完整去初始化/重新初始化，可能触发未预期的时序问题。→ 在 llm_client 中使用 `esp_wifi_set_mode()` 而非 `esp_wifi_deinit/init`，减少状态转换环节
 - **HTTP 服务器栈溢出**: `esp_http_server` 默认栈可能不足以处理带 JSON 解析的复杂请求。→ 设置 `HTTP_SERVER_STACK_SIZE=6144`（6KB），留足够余量
-- **LLM API Key 泄露**: 虽然仅限本地热点访问，但攻击者连接热点后可通过 `/api/config` GET 获取 key（若实现返回 key）。→ GET `/api/config` 明确用 `"***"` 掩码返回 key 字段
+- **LLM API Key 泄露**: 虽然仅限本地热点访问，但攻击者连接热点后可能通过 GET 获取 key。→ 双重防护：① GET `/api/config` 用 `"***"` 掩码返回 key 字段、`wifi_pass` 不返回；② `/api/config/wifi` 端点**不接受** `llm_key`，即使误提交也不写入 NVS
 - **print 环形缓冲区竞争**: `exec_task` 写入日志缓冲区，`web_console` 的 HTTP handler 读取，形成跨任务竞争。→ 使用互斥锁保护缓冲区访问
 - **HotSpot 创建失败**: 某些 ESP32-S3 开发板的射频校准或天线配置可能导致 SoftAP 创建失败。→ 设计回退到纯 UART 运行模式，不影响核心功能
 
