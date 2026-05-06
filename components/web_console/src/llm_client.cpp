@@ -380,28 +380,29 @@ static int build_system_prompt(char* buf, int max_len)
         "primary      = NUMBER | STRING | \"true\" | \"false\" | IDENTIFIER | \"(\" expression \")\"\n\n");
 
     // Builtin functions (design.md §6.10)
+    // Each entry: signature -> return_type   short description
     pos += snprintf(buf + pos, (size_t)(max_len - pos),
         "Builtin functions:\n"
-        "- digital_read(pin) -> number\n"
-        "- digital_write(pin, val) -> void\n"
-        "- analog_read(pin) -> number\n"
-        "- analog_write(pin, val) -> void\n"
-        "- sleep(ms) -> void\n"
-        "- print(val) -> void\n"
-        "- list_peers() -> string\n"
-        "- peer_count() -> number\n"
-        "- peer_online(id) -> bool (accepts number or string)\n"
-        "- remote_read(id[, pin]) -> number (accepts number or string)\n"
-        "- espnow_send(id, cmd, payload...) -> void\n"
-        "- list_new(size) -> list\n"
-        "- list_get(lst, i) -> number\n"
-        "- list_set(lst, i, v) -> void\n"
-        "- list_len(lst) -> number\n"
-        "- remote_read_avg(id_list) -> number\n"
-        "- remote_read_max(id_list) -> number\n"
-        "- remote_read_min(id_list) -> number\n"
-        "- read_sensor(pin) -> number\n"
-        "- send_motor(pin, speed) -> void\n\n");
+        "- digital_read(pin) -> number   0 (LOW) or 1 (HIGH), reads GPIO voltage level\n"
+        "- digital_write(pin,val)-> void set GPIO: 0=LOW/off, 1=HIGH/on\n"
+        "- analog_read(pin) -> number   read ADC pin, returns 0-4095 (10-bit scaled)\n"
+        "- analog_write(pin,val)-> void PWM output, val: 0(off) to 1023(max)\n"
+        "- sleep(ms) -> void            pause script for N milliseconds\n"
+        "- print(val) -> void           print value to web console execution log\n"
+        "- list_peers() -> string       list all online devices as formatted text\n"
+        "- peer_count() -> number       number of currently online peer devices\n"
+        "- peer_online(id) -> bool      check if peer id/name is online\n"
+        "- remote_read(id[,pin])->num   read sensor from remote module (id=number or name string; pin=optional ADC pin on remote; returns 0-4095)\n"
+        "- espnow_send(id,cmd,pl...)->void  send raw command to remote module (cmd=0x0001-0xFFFF, payload=bytes)\n"
+        "- list_new(size) -> list       create a list with N slots (pool allocated)\n"
+        "- list_get(lst,i) -> number    get element at index i (0-based) from list\n"
+        "- list_set(lst,i,v) -> void    set element at index i in list to value v\n"
+        "- list_len(lst) -> number      number of elements in list\n"
+        "- remote_read_avg(ids)->num    read multiple remote sensors, return average (ids=comma-separated string like \"1,2,3\")\n"
+        "- remote_read_max(ids)->num    read multiple remotes, return max value\n"
+        "- remote_read_min(ids)->num    read multiple remotes, return min value\n"
+        "- read_sensor(pin) -> number   read LOCAL analog sensor (ADC pin), returns 0-4095\n"
+        "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n\n");
 
     // Online devices
     pos += snprintf(buf + pos, (size_t)(max_len - pos),
@@ -530,8 +531,15 @@ int llm_client_call(const char* ssid, const char* pass,
     }
 
     // ---- 2. Build system prompt ----
-    char sys_prompt[2048];
-    build_system_prompt(sys_prompt, sizeof(sys_prompt));
+    // Heap-allocate a generous buffer (design.md's "no dynamic allocation"
+    // rule does not apply here — the prompt contains BNF + builtins + device
+    // list which can grow, and heap is already used extensively elsewhere).
+    char* sys_prompt = (char*)malloc(4096);
+    if (sys_prompt == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate system prompt buffer");
+        return -1;
+    }
+    build_system_prompt(sys_prompt, 4096);
 
     // ---- 3. Build HTTP JSON body ----
     cJSON* root = cJSON_CreateObject();
@@ -551,6 +559,10 @@ int llm_client_call(const char* ssid, const char* pass,
         cJSON_AddStringToObject(user_msg, "content", user_prompt);
         cJSON_AddItemToArray(messages, user_msg);
     }
+
+    // Free prompt buffer — cJSON already copied its content internally
+    free(sys_prompt);
+    sys_prompt = NULL;
 
     cJSON_AddNumberToObject(root, "temperature", 0);
     cJSON_AddNumberToObject(root, "max_tokens", 512);

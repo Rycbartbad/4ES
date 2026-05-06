@@ -39,6 +39,7 @@ static const char* TAG = "script_inject";
 
 static char           s_print_buf[BUF_SIZE];
 static int            s_write_pos = 0;   /* next write position */
+static bool           s_has_wrapped = false;  /* true once write_pos wraps around */
 static SemaphoreHandle_t s_print_mutex = NULL;
 
 // ====================================================================
@@ -55,6 +56,7 @@ void script_inject_init(void)
     }
     memset(s_print_buf, 0, BUF_SIZE);
     s_write_pos = 0;
+    s_has_wrapped = false;
 }
 
 // ====================================================================
@@ -76,6 +78,7 @@ void script_inject_write_print(const char* str, int len)
     for (int i = 0; i < len; i++) {
         s_print_buf[s_write_pos] = str[i];
         s_write_pos = (s_write_pos + 1) % BUF_SIZE;
+        if (s_write_pos == 0) s_has_wrapped = true;
     }
 
     // Ensure final byte is NUL so partial reads are safe
@@ -100,27 +103,29 @@ int script_inject_read_log(char* buf, int max_len)
         return 0;
     }
 
-    // Find logical start — the oldest byte is at write_pos if the
-    // buffer has ever wrapped, else at position 0.
-    // Strategy: scan from write_pos forward to find start of oldest
-    // complete line.  For simplicity we copy from write_pos → end
-    // then from 0 → write_pos.
     int total = 0;
 
-    // Copy from s_write_pos to end of buffer
-    int chunk1 = BUF_SIZE - s_write_pos;
-    if (chunk1 > 0) {
-        int to_copy = (chunk1 < max_len) ? chunk1 : max_len;
-        memcpy(buf, s_print_buf + s_write_pos, (size_t)to_copy);
-        total = to_copy;
-    }
-
-    // Copy from 0 to s_write_pos (if any space left)
-    if (total < max_len && s_write_pos > 0) {
-        int chunk2 = s_write_pos;
-        int to_copy = (chunk2 < max_len - total) ? chunk2 : (max_len - total);
-        memcpy(buf + total, s_print_buf, (size_t)to_copy);
-        total += to_copy;
+    if (!s_has_wrapped) {
+        // Buffer has never wrapped — data is contiguously from 0 to s_write_pos
+        int to_copy = (s_write_pos < max_len) ? s_write_pos : max_len;
+        if (to_copy > 0) {
+            memcpy(buf, s_print_buf, (size_t)to_copy);
+            total = to_copy;
+        }
+    } else {
+        // Buffer has wrapped — data is from s_write_pos → end → 0 → s_write_pos
+        int chunk1 = BUF_SIZE - s_write_pos;
+        if (chunk1 > 0) {
+            int to_copy = (chunk1 < max_len) ? chunk1 : max_len;
+            memcpy(buf, s_print_buf + s_write_pos, (size_t)to_copy);
+            total = to_copy;
+        }
+        if (total < max_len && s_write_pos > 0) {
+            int chunk2 = s_write_pos;
+            int to_copy = (chunk2 < max_len - total) ? chunk2 : (max_len - total);
+            memcpy(buf + total, s_print_buf, (size_t)to_copy);
+            total += to_copy;
+        }
     }
 
     // NUL-terminate

@@ -82,6 +82,14 @@ static inline Value val_bool(bool b)
     return v;
 }
 
+static inline Value val_str(const char* s)
+{
+    Value v;
+    v.type = VAL_STR;
+    v.str  = s;
+    return v;
+}
+
 // ====================================================================
 // Static object pools --- design.md section 6.6
 // ====================================================================
@@ -240,8 +248,7 @@ static Value eval_expr(ASTNode* node, Environment* env, ExecutionContext* ctx)
         return val_num(node->num_val);
 
     case NODE_LITERAL_STR:
-        // String value as expression (e.g., string literal used directly)
-        return val_bool(node->str_val != NULL);
+        return val_str(node->str_val);
 
     case NODE_LITERAL_BOOL:
         return val_bool(node->bool_val);

@@ -918,7 +918,7 @@ AI 约束不仅仅停留在 system prompt，解释器运行时强制执行以下
 | 函数对象池 (Kconfig 可配) | 运行时 |
 | 接收队列使用静态分配 FreeRTOS 队列 | 通信层 |
 | 避免 std::vector / std::map / std::string | 全项目 |
-| [**例外**] LLM 客户端路径：`esp_http_client` 内部堆分配 + `jsmn` 栈上解析（零堆分配） | Web Console LLM 调用（见 §16.6） |
+| [**例外**] LLM 客户端路径：`esp_http_client` 内部堆分配 + `cJSON`/`malloc` 响应解析 + System Prompt heap 缓冲区 | Web Console LLM 调用（见 §16.6） |
 
 ## 11. Kconfig 参数汇总
 
@@ -1491,10 +1491,17 @@ ESP32-S3 单射频，SoftAP 和 Station 模式不能完全独立共存。LLM 客
 
 ### 16.6 LLM 请求构建
 
+System Prompt 由 `llm_client.c` 的 `build_system_prompt()` 自动构建，heap 分配 4KB 缓冲区（用后释放），包含以下内容：
+
 ```
 System Prompt (自动构建):
   [BNF 语法 (design.md §6.2)]
-  [内置函数列表 (不含 list_free)]
+  [内置函数列表 + 语义说明 (不含 list_free)]
+  例:
+  - digital_read(pin) -> number   0/1, reads GPIO level
+  - remote_read(id[,pin]) -> num  read sensor from remote by id/name
+  - send_motor(pin,speed)->void   DC motor PWM: 0(stop)-100(full)
+  ...
   [资源约束 (按 Kconfig 标准配置)]
   [当前在线设备列表 (来自 list_peers()):
    - id=1, name=kitchen_temp, capabilities=温度
@@ -1515,9 +1522,7 @@ API Request (OpenAI-compatible):
   }
 ```
 
-**响应解析**: 使用 `jsmn`（轻量 token 式 JSON 解析器，仅 ~2KB Flash，零堆分配）解析 LLM 返回的 JSON，遍历 token 提取 `choices[0].message.content` 字段内容，再通过简单状态机去除 markdown 代码块标记（` ``` `、` ```javascript ` 等），提取纯脚本代码。
-
-> **设计哲学说明**: `jsmn` 是只解析不生成的 tokenizer，解析结果存储在栈上的 `jsmntok_t` 数组中，不调用 `malloc`/`free`。这完全符合本项目"避免动态内存分配"的原则。如果未来需要更复杂的 JSON 生成（如构造嵌套请求体），可以考虑在 LLM 客户端路径上引入一次性的栈缓冲区 + `snprintf` 手动构建，而非切换回 cJSON。
+**响应解析**: 使用 `cJSON` 解析 LLM 返回的 JSON，通过 event_handler 在 `esp_http_client_perform()` 执行过程中实时捕获 `HTTP_EVENT_ON_DATA` 数据块，组合为完整响应体。提取 `choices[0].message.content` 字段内容，再通过 `extract_script_from_response()` 去除 markdown 代码块标记（` ``` `、` ```javascript ` 等），提取纯脚本代码。
 
 > **System Prompt 中的设备列表动态注入**: 每次调用 `/api/ai` 时，先调用 `list_peers()` 获取当前在线设备，拼入 System Prompt。确保 LLM 始终知道当前有哪些设备可用。
 
