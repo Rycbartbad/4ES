@@ -5,11 +5,9 @@ CONFIG_DEVICE_ROLE_SENSOR=y
 # Sensor firmware doesn't need Web Console
 # CONFIG_WEB_CONSOLE_ENABLED is not set
 
-# Sensor identity (edit these before building each sensor)
-# To build multiple sensors with different IDs:
-#   1. Copy this file to sdkconfig.defaults.my_sensor
-#   2. Edit SENSOR_MODULE_ID and SENSOR_NAME
-#   3. set SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.my_sensor
-#   4. idf.py build
-CONFIG_SENSOR_MODULE_ID=1
-CONFIG_SENSOR_MODULE_NAME="sensor_1"
+# Sensor identity (auto = use MAC address last byte, unique per chip)
+# Override these if you need fixed IDs for specific locations:
+#   CONFIG_SENSOR_MODULE_ID=10
+#   CONFIG_SENSOR_MODULE_NAME="kitchen_temp"
+CONFIG_SENSOR_MODULE_ID=0
+CONFIG_SENSOR_MODULE_NAME=""
