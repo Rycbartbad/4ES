@@ -29,7 +29,7 @@ static void test_peer_insert_find(void) {
     TEST_ASSERT_STR_EQUAL("sensor_1", p->name);
 
     // Find non-existent
-    p = peer_mgr_find_by_mac(mac2);
+    p = peer_mgr_find_by_mac(mac2, NULL);
     TEST_ASSERT_NULL(p);
 
     TEST_PASS();

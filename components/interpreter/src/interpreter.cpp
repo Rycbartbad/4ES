@@ -124,6 +124,10 @@ void bif_pool_free(ListData* lst)
     for (int i = 0; i < CONFIG_LIST_POOL_SIZE; i++) {
         if (&s_list_pool[i] == lst) {
             s_list_used[i] = false;
+            // Zero the slot to make any dangling reference safely inert.
+            // len=0 ensures list_get/set bounds-check fail gracefully.
+            // This is a best-effort guard, not a full use-after-free
+            // prevention (a subsequent list_new may reuse this slot).
             memset(&s_list_pool[i], 0, sizeof(ListData));
             return;
         }
@@ -223,12 +227,9 @@ void ctx_reset(ExecutionContext* ctx)
     ctx->inside_loop         = false;
 
     memset(ctx->loop_iterations, 0, sizeof(ctx->loop_iterations));
-    memset(ctx->list_pool_used, 0, sizeof(ctx->list_pool_used));
-    memset(ctx->func_pool_used, 0, sizeof(ctx->func_pool_used));
 
     // Reset global pool tracking arrays so slots are free for next script.
-    // ctx's own tracking arrays are zeroed above; the global arrays
-    // (s_list_used, s_func_used) would otherwise leak slots between scripts.
+    // (s_list_used, s_func_used) are zeroed by bif_pools_reset() below.
     bif_pools_reset();
 }
 
@@ -448,6 +449,8 @@ static void execute_statement(ASTNode* node, Environment* env,
         int depth = ctx->loop_depth++;
         ctx->loop_iterations[depth] = 0;
 
+        // Save/restore inside_loop so nested whiles don't clobber it (B1)
+        bool saved_inside = ctx->inside_loop;
         ctx->inside_loop = true;
 
         while (1) {
@@ -477,7 +480,7 @@ static void execute_statement(ASTNode* node, Environment* env,
             execute_statement(node->body, env, ctx);
         }
 
-        ctx->inside_loop = false;
+        ctx->inside_loop = saved_inside;
         ctx->loop_depth--;
         return;
     }

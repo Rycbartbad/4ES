@@ -172,14 +172,35 @@ void register_builtins(Environment* env)
         v.type = VAL_FUNC;
         v.func = fo;
         env_define(env, s_builtin_entries[i].name, v);
+        // Note: env_define stores the .rodata string literal pointer, NOT
+        // an interned pointer.  env_get uses pointer equality, so the
+        // caller (call_function) must fall through to call_builtin_by_name
+        // strcmp dispatch rather than relying on pointer match.
+        // This is intentional — see design.md §6.9.1 for reasoning.
     }
+
+    // Register print callback capture (web_console integration)
+    g_print_callback = NULL;  // reset; web_console sets it later
 }
 
 // ====================================================================
-// Optional print capture callback — set by web_console (P7.5)
-// Defined here, non-NULL when web_console is active.
+// Optional print callback (set by web_console)
 // ====================================================================
+
 void (*g_print_callback)(const char* str, int len) = NULL;
+
+// ====================================================================
+// Helper: consistent argument validation for builtins
+// Returns true if arg_count >= required, logs warning otherwise.
+// ====================================================================
+static bool check_args(const char* func, int arg_count, int required)
+{
+    if (arg_count < required) {
+        ESP_LOGW(TAG, "%s() requires %d args, got %d", func, required, arg_count);
+        return false;
+    }
+    return true;
+}
 
 // ====================================================================
 // call_builtin_by_name — dispatched by interpreter.cpp
@@ -261,14 +282,15 @@ static int parse_module_ids(Value* args, int arg_count,
         char buf[128];
         strncpy(buf, args[0].str, sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = '\0';
-        char* token = strtok(buf, ",");
+        char* saveptr;
+        char* token = strtok_r(buf, ",", &saveptr);
         while (token && id_count < ids_max) {
             // Trim leading whitespace
             while (*token == ' ' || *token == '\t') token++;
             if (*token >= '0' && *token <= '9') {
                 ids_out[id_count++] = (uint8_t)atoi(token);
             }
-            token = strtok(NULL, ",");
+            token = strtok_r(NULL, ",", &saveptr);
         }
         return id_count;
     }
@@ -366,7 +388,7 @@ static Value bif_print(Value* args, int n, ExecutionContext* ctx)
         case VAL_NUM: {
             double intpart;
             if (modf(v->num, &intpart) == 0.0 &&
-                v->num < 1e9 && v->num > -1e9) {
+                v->num < 1e10 && v->num > -1e10) {
                 len = snprintf(line, sizeof(line), "%.0f\n", v->num);
                 printf("%s", line);
             } else {
@@ -552,7 +574,8 @@ static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
 static Value bif_espnow_send(Value* args, int n, ExecutionContext* ctx)
 {
     (void)ctx;
-    if (n < 2 || args[0].type != VAL_NUM || args[1].type != VAL_NUM) {
+    if (!check_args("espnow_send", n, 2) ||
+        args[0].type != VAL_NUM || args[1].type != VAL_NUM) {
         return bval_num(-1);
     }
 
@@ -671,13 +694,18 @@ static Value bif_remote_read_avg(Value* args, int n, ExecutionContext* ctx)
 
     double sum   = 0.0;
     int    valid = 0;
+    bool   limit_hit = false;
+    double values[DATA_RESP_MAX_VALUES];
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
-        if (sensor_call_check(ctx)) break;
-        double val = espnow_comm_request_read(ids[i], 0);
-        sum += val;
-        valid++;
+        if (sensor_call_check(ctx)) { limit_hit = true; break; }
+        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        if (cnt > 0) { sum += values[0]; valid++; }
     }
+
+    // Aggregation completed (possibly partial).  Don't let the sensor
+    // call limit abort the entire script — the partial average is valid.
+    if (limit_hit) ctx->constraint_violated = false;
 
     return bval_num((valid > 0) ? (sum / (double)valid) : 0.0);
 }
@@ -694,14 +722,16 @@ static Value bif_remote_read_max(Value* args, int n, ExecutionContext* ctx)
 
     double max_val = -1e308;
     int    valid   = 0;
+    bool   limit_hit = false;
+    double values[DATA_RESP_MAX_VALUES];
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
-        if (sensor_call_check(ctx)) break;
-        double val = espnow_comm_request_read(ids[i], 0);
-        if (valid == 0 || val > max_val) max_val = val;
-        valid++;
+        if (sensor_call_check(ctx)) { limit_hit = true; break; }
+        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        if (cnt > 0) { max_val = (valid == 0 || values[0] > max_val) ? values[0] : max_val; valid++; }
     }
 
+    if (limit_hit) ctx->constraint_violated = false;
     return bval_num((valid > 0) ? max_val : 0.0);
 }
 
@@ -717,14 +747,16 @@ static Value bif_remote_read_min(Value* args, int n, ExecutionContext* ctx)
 
     double min_val = 1e308;
     int    valid   = 0;
+    bool   limit_hit = false;
+    double values[DATA_RESP_MAX_VALUES];
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
-        if (sensor_call_check(ctx)) break;
-        double val = espnow_comm_request_read(ids[i], 0);
-        if (valid == 0 || val < min_val) min_val = val;
-        valid++;
+        if (sensor_call_check(ctx)) { limit_hit = true; break; }
+        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        if (cnt > 0) { min_val = (valid == 0 || values[0] < min_val) ? values[0] : min_val; valid++; }
     }
 
+    if (limit_hit) ctx->constraint_violated = false;
     return bval_num((valid > 0) ? min_val : 0.0);
 }
 
@@ -735,7 +767,8 @@ static Value bif_remote_read_min(Value* args, int n, ExecutionContext* ctx)
 static Value bif_list_free_builtin(Value* args, int n, ExecutionContext* ctx)
 {
     (void)ctx;
-    if (n >= 1 && args[0].type == VAL_LIST) {
+    if (!check_args("list_free", n, 1)) return bval_undefined();
+    if (args[0].type == VAL_LIST) {
         bif_pool_free(args[0].list);
     }
     return bval_undefined();

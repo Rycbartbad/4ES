@@ -1,38 +1,16 @@
 /*
- * ESP-LEGO V1.0 — Test suite stubs
- *
- * Placeholder implementations for test suites declared in main.cpp.
- * Replace with real test logic when test files are written.
+ * ESP-LEGO V1.0 — Test suite stubs for tests not yet implemented.
+ * Only keep stubs for suites that don't have their own test file yet.
  */
 
 #include "test_runner.h"
 
-void test_lexer(void) {
-    TEST("lexer (stub)");
-    TEST_PASS();
-}
-
 void test_parser(void) {
-    TEST("parser (stub)");
+    TEST("parser (stub — no parser_test.cpp yet)");
     TEST_PASS();
 }
 
 void test_interpreter(void) {
-    TEST("interpreter (stub)");
-    TEST_PASS();
-}
-
-void test_peer_mgr(void) {
-    TEST("peer_mgr (stub)");
-    TEST_PASS();
-}
-
-void test_protocol(void) {
-    TEST("protocol (stub)");
-    TEST_PASS();
-}
-
-void test_environment(void) {
-    TEST("environment (stub)");
+    TEST("interpreter (stub — no interpreter_test.cpp yet)");
     TEST_PASS();
 }

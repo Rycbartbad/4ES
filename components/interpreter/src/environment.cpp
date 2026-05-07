@@ -107,6 +107,12 @@ int env_snapshot(Environment* env)
 
 void env_restore_pristine(Environment* env)
 {
+    // Guard: snapshot must have been taken first.
+    // Without this, s_pristine_env.count = 0 and the restore would
+    // wipe all bindings (including builtins), leaving env empty.
+    if (s_pristine_env.count == 0) {
+        return;  // no snapshot — nothing to restore
+    }
     env->parent = s_pristine_env.parent;
     env->count = s_pristine_env.count;
     memcpy(env->bindings, s_pristine_env.bindings,

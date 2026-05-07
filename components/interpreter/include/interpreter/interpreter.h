@@ -11,8 +11,6 @@ extern "C" {
 
 // Runtime constraints — design.md §6.7
 #define MAX_NESTED_LOOPS 16
-#define MAX_LIST_POOL_TRACK 64
-#define MAX_FUNC_POOL_TRACK 64
 
 typedef struct {
     int exec_depth;
@@ -27,10 +25,6 @@ typedef struct {
 
     // Watchdog integration (global atomic flag)
     volatile bool* s_script_timeout_ptr;
-
-    // Pool tracking for cleanup
-    int list_pool_used[MAX_LIST_POOL_TRACK];
-    int func_pool_used[MAX_FUNC_POOL_TRACK];
 
     // Environment pool tracking
     int env_pool_used;

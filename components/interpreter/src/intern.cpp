@@ -1,5 +1,6 @@
 #include "interpreter/intern.h"
 #include <string.h>
+#include "esp_log.h"
 
 // Fixed intern table — no dynamic allocation
 static struct {
@@ -26,7 +27,19 @@ const char* intern_string(const char* start, int len)
     }
 
     // Allocate new entry
-    if (s_intern_count >= CONFIG_INTERN_TABLE_SIZE) return NULL;
+    if (s_intern_count >= CONFIG_INTERN_TABLE_SIZE) {
+        // Table full — overwrite oldest entry (FIFO eviction).
+        // This is better than returning NULL, which would cause
+        // silent "(null)" strings throughout the interpreter.
+        // The oldest entry is at index 0 after a shift.
+        // Simple strategy: shift all entries left by 1, put new at end.
+        // This is O(n) but intern table is small (128) and this is rare.
+        memmove(&s_intern_table[0], &s_intern_table[1],
+                sizeof(s_intern_table[0]) * (CONFIG_INTERN_TABLE_SIZE - 1));
+        s_intern_count--;
+        ESP_LOGW("intern", "Table full, evicted oldest entry (%d slots)",
+                 CONFIG_INTERN_TABLE_SIZE);
+    }
 
     memcpy(s_intern_table[s_intern_count].str, start, len);
     s_intern_table[s_intern_count].str[len] = '\0';

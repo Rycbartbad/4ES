@@ -946,6 +946,7 @@ static ASTNode* parse_call(Parser* p)
     if (match(p, TOKEN_LPAREN)) {
         if (expr->type != NODE_IDENT) {
             error(p, "Invalid function call (not an identifier)");
+            sync(p);
             p->parse_depth--;
             return NULL;
         }
@@ -956,6 +957,7 @@ static ASTNode* parse_call(Parser* p)
         ASTNode** args = alloc_ptrs(MAX_CALL_ARGS);
         if (!args) {
             error(p, "Argument pointer pool exhausted");
+            sync(p);
             p->parse_depth--;
             return NULL;
         }
@@ -965,11 +967,13 @@ static ASTNode* parse_call(Parser* p)
             do {
                 if (arg_count >= MAX_CALL_ARGS) {
                     error(p, "Too many function arguments");
+                    sync(p);
                     p->parse_depth--;
                     return NULL;
                 }
                 ASTNode* arg = parse_assignment(p);
                 if (!arg) {
+                    sync(p);
                     p->parse_depth--;
                     return NULL;
                 }
@@ -978,6 +982,7 @@ static ASTNode* parse_call(Parser* p)
         }
 
         if (!expect(p, TOKEN_RPAREN, "Expected ')' after function arguments")) {
+            sync(p);
             p->parse_depth--;
             return NULL;
         }
@@ -1091,6 +1096,18 @@ static ASTNode* parse_primary(Parser* p)
                 return NULL;
             }
             break;
+        }
+        case TOKEN_ERROR: {
+            // Propagate lexer's error message (e.g. "Unterminated string")
+            Token t = advance(p);
+            error(p, t.str ? t.str : "Lexer error");
+            p->parse_depth--;
+            return NULL;
+        }
+        case TOKEN_END: {
+            error(p, "Unexpected end of script");
+            p->parse_depth--;
+            return NULL;
         }
         default:
             error(p, "Expected expression");

@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "esp_log.h"
 
 // ---------- private helpers ----------
 
@@ -154,6 +155,7 @@ Token lexer_next(Lexer* lex)
 
         char buf[INTERN_ENTRY_LEN];     // 64 bytes, matches intern table slot
         int  buf_len = 0;
+        bool truncated = false;
 
         for (;;) {
             char ch = peek(lex);
@@ -189,14 +191,22 @@ Token lexer_next(Lexer* lex)
                 }
                 if (buf_len < INTERN_ENTRY_LEN - 1) {
                     buf[buf_len++] = replace;
+                } else {
+                    truncated = true;
                 }
                 advance(lex); // consume escaped character
             } else {
                 if (buf_len < INTERN_ENTRY_LEN - 1) {
                     buf[buf_len++] = ch;
+                } else {
+                    truncated = true;
                 }
                 advance(lex);
             }
+        }
+
+        if (truncated) {
+            ESP_LOGW("lexer", "String literal truncated at %d chars", INTERN_ENTRY_LEN - 1);
         }
 
         buf[buf_len] = '\0';
