@@ -37,10 +37,9 @@
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 
 // ----------------------------------------------------------------
-// Module identity (set by application before send_announce)
+// Module name (set by sensor before send_announce)
 // ----------------------------------------------------------------
-uint8_t g_espnow_module_id   = 0;
-char    g_espnow_module_name[17] = "esp_lego";
+char    g_espnow_module_name[17] = "sensor";
 
 // ----------------------------------------------------------------
 // Log tag
@@ -342,13 +341,11 @@ static int rx_process_one(void)
     switch (hdr.msg_type) {
 
     case MSG_ANNOUNCE: {
-        // Payload: [1B module_id][16B name (zero-padded)]
+        // Payload: [16B name (zero-padded)] — no module_id (master assigns it)
 #if CONFIG_DEVICE_ROLE_MASTER
         if (item.len < (int)(MSG_HEADER_SIZE + 1)) break;
-        uint8_t ann_mod_id = item.data[MSG_HEADER_SIZE];
-        // name starts at MSG_HEADER_SIZE + 1, up to 16 bytes, null-padded
-        peer_mgr_update(item.src_mac, ann_mod_id,
-                        (const char*)(item.data + MSG_HEADER_SIZE + 1));
+        const char* ann_name = (const char*)(item.data + MSG_HEADER_SIZE);
+        peer_mgr_handle_announce(item.src_mac, ann_name);
 #endif
         break;
     }
@@ -387,7 +384,7 @@ void espnow_comm_send_announce(void)
     uint8_t buf[250];
     size_t  len = 0;
 
-    protocol_build_announce(buf, &len, g_espnow_module_id, g_espnow_module_name);
+    protocol_build_announce(buf, &len, g_espnow_module_name);
 
     esp_err_t ret = esp_now_send(s_broadcast_mac, buf, len);
     if (ret != ESP_OK) {

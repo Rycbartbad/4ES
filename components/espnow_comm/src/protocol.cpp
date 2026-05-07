@@ -14,7 +14,7 @@
 // Packet builders
 // ----------------------------------------------------------------
 
-void protocol_build_announce(uint8_t* buf, size_t* len, uint8_t module_id, const char* name)
+void protocol_build_announce(uint8_t* buf, size_t* len, const char* name)
 {
     MsgHeader* hdr = (MsgHeader*)buf;
     hdr->version   = MSG_VERSION;
@@ -23,19 +23,18 @@ void protocol_build_announce(uint8_t* buf, size_t* len, uint8_t module_id, const
     hdr->seq_id    = 0;
     hdr->cmd_id    = 0;
 
-    // Payload: [1B module_id][16B name, zero-padded]
+    // Payload: [16B name, zero-padded] (no module_id — master assigns it)
     uint8_t* pay = buf + MSG_HEADER_SIZE;
-    pay[0] = module_id;
 
     size_t name_len = strlen(name);
     if (name_len > 16) name_len = 16;
-    memcpy(pay + 1, name, name_len);
+    memcpy(pay, name, name_len);
     if (name_len < 16) {
-        memset(pay + 1 + name_len, 0, 16 - name_len);
+        memset(pay + name_len, 0, 16 - name_len);
     }
 
-    hdr->payload_len = 1 + 16;      // fixed-size announce payload
-    *len = MSG_HEADER_SIZE + 1 + 16;
+    hdr->payload_len = 16;          // name only
+    *len = MSG_HEADER_SIZE + 16;
 }
 
 void protocol_build_data_req(uint8_t* buf, size_t* len,

@@ -63,6 +63,96 @@ void peer_mgr_init(void)
 }
 
 // ------------------------------------------------------------------
+// Handle announce from sensor — auto-assigns module_id if new MAC
+// ------------------------------------------------------------------
+uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name)
+{
+    if (mac == NULL || name == NULL) return 0;
+
+    PEER_LOCK();
+
+    // 1. Try to find existing entry by MAC
+    int existing_idx = -1;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (memcmp(s_peers[i].mac, mac, 6) == 0) {
+            existing_idx = i;
+            break;
+        }
+    }
+
+    if (existing_idx >= 0) {
+        // Found — update name, refresh state
+        PeerEntry* e = &s_peers[existing_idx];
+        size_t nlen = strlen(name);
+        if (nlen > 16) nlen = 16;
+        memcpy(e->name, name, nlen);
+        e->name[nlen] = '\0';
+        e->state     = PEER_ACTIVE;
+        e->last_seen = xTaskGetTickCount();
+        uint8_t id   = e->module_id;
+        PEER_UNLOCK();
+        return id;
+    }
+
+    // 2. Not found — allocate next sequential module_id
+    uint8_t max_id = 0;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].module_id > max_id) {
+            max_id = s_peers[i].module_id;
+        }
+    }
+    uint8_t new_id = max_id + 1;
+    if (new_id == 0) new_id = 1;  // wrap: 255→1
+
+    // 3. Find empty slot
+    int slot = -1;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) {
+            slot = i;
+            break;
+        }
+        if (s_peers[i].state == PEER_OFFLINE && slot == -1) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        ESP_LOGW(TAG, "peer table full — cannot register new sensor");
+        PEER_UNLOCK();
+        return 0;
+    }
+
+    // 4. Fill entry
+    PeerEntry* e = &s_peers[slot];
+    memset(e, 0, sizeof(PeerEntry));
+    memcpy(e->mac, mac, 6);
+    e->module_id = new_id;
+
+    snprintf(e->peer_id, PEER_ID_STR_LEN,
+             "%02x:%02x:%02x:%02x:%02x:%02x:%u",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+             (unsigned)new_id);
+
+    size_t nlen = strlen(name);
+    if (nlen > 16) nlen = 16;
+    memcpy(e->name, name, nlen);
+    e->name[nlen] = '\0';
+
+    memset(e->dedup_seq, 0xFF, sizeof(e->dedup_seq));
+    e->dedup_count = 0;
+
+    e->state     = PEER_ACTIVE;
+    e->last_seen = xTaskGetTickCount();
+    s_peer_count++;
+
+    ESP_LOGI(TAG, "peer announced (auto-id): %s \"%s\" (slot %d)",
+             e->peer_id, e->name, slot);
+    PEER_UNLOCK();
+    return new_id;
+}
+
+// ------------------------------------------------------------------
 // Insert
 // ------------------------------------------------------------------
 int peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name)

@@ -43,53 +43,14 @@
 #endif
 
 // ====================================================================
-// Sensor identity (from Kconfig, overrideable via sdkconfig.defaults)
-//
-// Default: derive module_id from the last byte of the chip's unique MAC
-// address, so every sensor gets a unique ID automatically at first boot.
-// Override via CONFIG_SENSOR_MODULE_ID / CONFIG_SENSOR_MODULE_NAME in
-// sdkconfig.defaults.sensor or menuconfig.
+// Module name (from Kconfig)
 // ====================================================================
 
-#ifndef CONFIG_SENSOR_MODULE_ID
-#define CONFIG_SENSOR_MODULE_ID   0  // 0 means "auto (use MAC last byte)"
-#endif
 #ifndef CONFIG_SENSOR_MODULE_NAME
-#define CONFIG_SENSOR_MODULE_NAME ""  // empty means "auto (sensor_{id})"
+#define CONFIG_SENSOR_MODULE_NAME "sensor"
 #endif
 
-#include "esp_efuse.h"
-#include "esp_mac.h"
-
-static uint8_t g_sensor_module_id = 0;
-static char    g_sensor_module_name[17] = "";
-
-static void init_sensor_identity(void) {
-    // Read factory MAC address
-    uint8_t mac[6];
-    esp_efuse_mac_get_default(mac);
-
-    // Determine module ID
-    if (CONFIG_SENSOR_MODULE_ID != 0) {
-        g_sensor_module_id = CONFIG_SENSOR_MODULE_ID;
-    } else {
-        // Use last byte of MAC (0-255), shifted to 1-255 range
-        g_sensor_module_id = mac[5] ? mac[5] : 1;
-    }
-
-    // Determine module name
-    if (CONFIG_SENSOR_MODULE_NAME[0] != '\0') {
-        strncpy(g_sensor_module_name, CONFIG_SENSOR_MODULE_NAME,
-                sizeof(g_sensor_module_name) - 1);
-    } else {
-        snprintf(g_sensor_module_name, sizeof(g_sensor_module_name),
-                 "sensor_%u", g_sensor_module_id);
-    }
-
-    printf("Sensor identity: module_id=%d name=%s (MAC=%02x:%02x:%02x:%02x:%02x:%02x)\n",
-           g_sensor_module_id, g_sensor_module_name,
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
+static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 
 // ====================================================================
 // Receive callback — handles DATA_REQ and CMD messages from master
@@ -123,7 +84,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  g_espnow_module_id, 0,
+                                  0, 0,
                                   values, SENSOR_ADC_COUNT);
 
         if (resp_len > 0) {
@@ -143,7 +104,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         {
             uint8_t ack_buf[64];
             size_t ack_len = 0;
-            protocol_build_ack(ack_buf, &ack_len, g_espnow_module_id, 0);
+            protocol_build_ack(ack_buf, &ack_len, 0, 0);
             if (ack_len > 0) {
                 esp_now_send(src_mac, ack_buf, ack_len);
             }
@@ -194,12 +155,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // ---- Resolve sensor identity (MAC-based or Kconfig override) ----
-    init_sensor_identity();
-
-    // ---- Set module identity for ESP-NOW subsystems ----
-    g_espnow_module_id   = g_sensor_module_id;
-    strncpy(g_espnow_module_name, g_sensor_module_name,
+    // ---- Set module name (used in announce) ----
+    strncpy(g_espnow_module_name, s_module_name,
             sizeof(g_espnow_module_name));
     g_espnow_module_name[sizeof(g_espnow_module_name) - 1] = '\0';
 
@@ -216,8 +173,8 @@ extern "C" void app_main(void)
         printf("ERROR: Failed to create announce task\n");
     }
 
-    printf("Sensor ready — module_id=%d name=%s\n",
-           g_sensor_module_id, g_sensor_module_name);
+    printf("Sensor ready — name=%s\n",
+           g_espnow_module_name);
 
     // ---- Main loop ----
     while (1) {

@@ -5,9 +5,8 @@ CONFIG_DEVICE_ROLE_SENSOR=y
 # Sensor firmware doesn't need Web Console
 # CONFIG_WEB_CONSOLE_ENABLED is not set
 
-# Sensor identity (auto = use MAC address last byte, unique per chip)
-# Override these if you need fixed IDs for specific locations:
-#   CONFIG_SENSOR_MODULE_ID=10
+# Sensor module name (used in announce packets)
+# Master assigns module_id dynamically upon connection.
+# Override for fixed identity:
 #   CONFIG_SENSOR_MODULE_NAME="kitchen_temp"
-CONFIG_SENSOR_MODULE_ID=0
-CONFIG_SENSOR_MODULE_NAME=""
+CONFIG_SENSOR_MODULE_NAME="sensor"

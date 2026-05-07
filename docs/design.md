@@ -75,21 +75,19 @@ Esp lego/
 
 子模块上电后定期向广播地址 FF:FF:FF:FF:FF:FF 发送宣告包。主控被动接收，动态维护设备列表。子模块电池供电，对实时发现延迟容忍度高（秒级）。
 
-### 4.2 宣告包格式 (22 字节)
+### 4.2 宣告包格式 (16 字节)
 
 ```
-[0x10: msg_type][1B: module_id][16B: module_name][4B: capabilities]
+[0x10: msg_type][16B: module_name]
 ```
 
 | 字段 | 长度 | 说明 |
 |------|------|------|
 | msg_type | 1 字节 | 固定 0x10 (宣告消息) |
-| module_id | 1 字节 | 模块硬件 ID (0~255) |
 | module_name | 16 字节 | 可读名称, 例如 "kitchen_temp", 不足 \0 补齐 |
-| capabilities | 4 字节 | 功能位图 (bit0=温度, bit1=湿度, bit2=电机...) |
-| 总计 | 22 字节 | 远小于 ESP-NOW 250 字节限制 |
+| 总计 | 16 字节 | 远小于 ESP-NOW 250 字节限制 |
 
-> **capabilities 用途**: 该字段在 System Prompt 构建时（§9.1）由 Web Console 的 `/api/ai` 处理程序翻译为可读能力描述（如 `capabilities=温度,湿度`）。脚本层不直接暴露 capabilities 查询 API——AI 通过 System Prompt 中的设备描述获取能力信息，无需运行时查询。`peer_mgr_list()` 仅返回 `id:name`，capabilities 通过独立的数据结构在后台维护。: 宣告包**不包裹在** §7.1 的通用消息头中（无 version/target_id/seq_id/cmd_id/payload_len 字段）。它是子模块发出的最小自描述广播包，接收方在 `rx_task` 的解析分叉点通过判别 `msg_type == 0x10`（ANNOUNCE）走宣告解析路径，其余走通用消息头解析路径（§7.1）。此分叉在 `comm_full.cpp` 的 `parse_incoming_packet()` 函数中处理。
+> **module_id 分配**: 子模块不再携带固定 module_id。主控收到宣告包后，根据源 MAC 地址分配顺序 module_id (1, 2, 3...)，存入 peer 表。宣告包**不包裹在** §7.1 的通用消息头中（无 version/target_id/seq_id/cmd_id/payload_len 字段）。
 
 ### 4.3 子模块行为
 
@@ -98,8 +96,8 @@ void announce_task(void*) {
     uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     esp_now_add_peer(broadcast_mac, ...);
 
-    uint8_t pkt[22];
-    fill_announce_packet(pkt, module_id, module_name, capabilities);
+    uint8_t pkt[17];     // header(1) + name(16)
+    fill_announce_packet(pkt, module_name);
 
     while (1) {
         esp_now_send(broadcast_mac, pkt, sizeof(pkt));
@@ -108,7 +106,7 @@ void announce_task(void*) {
     }
 }
 
-子模块宣告包中包含 `module_id`（硬件 ID）和 `module_name`（名称），这两者应联合使用作为设备唯一标识。部署时建议强制 `module_id` 在系统内唯一（通过烧录配置）。
+子模块宣告包中仅包含 `module_name`（名称）。`module_id` 由主控在收到宣告时根据连接顺序依次分配（1, 2, 3...），不存储在子模块固件中。
 ```
 
 ### 4.4 主控行为
@@ -611,25 +609,7 @@ Value builtin_remote_read(span<Value> args) {
 }
 ```
 
-子模块模块名称通过 NVS 配置，上电时读取:
-
-```cpp
-char module_name[17] = "sensor_N";   // N 取 module_id 最后一位 (module_id % 10)，如 "sensor_3"
-nvs_handle_t nvs;
-if (nvs_open("config", NVS_READONLY, &nvs) == ESP_OK) {
-    size_t len = sizeof(module_name);
-    if (nvs_get_str(nvs, "module_name", module_name, &len) != ESP_OK) {
-        // NVS 无此键或读取失败 → 使用默认 "sensor_N"
-        snprintf(module_name, sizeof(module_name), "sensor_%u", module_id % 10);
-        ESP_LOGW("nvs", "module_name not set, using default '%s'", module_name);
-    }
-    nvs_close(nvs);
-} else {
-    // NVS 分区不可用 → 同样使用默认名称
-    snprintf(module_name, sizeof(module_name), "sensor_%u", module_id % 10);
-    ESP_LOGW("nvs", "NVS not available, using default '%s'", module_name);
-}
-```
+子模块模块名称通过 Kconfig 配置（`CONFIG_SENSOR_MODULE_NAME`），也可在 `sdkconfig.defaults.sensor` 中覆盖。传感器不再携带固定 `module_id`——主控在收到宣告时根据连接顺序依次分配。
 
 ## 7. ESP-NOW 通信协议
 

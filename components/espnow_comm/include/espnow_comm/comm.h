@@ -36,8 +36,7 @@ typedef void (*espnow_recv_callback_t)(const uint8_t* src_mac, uint8_t msg_type,
                                        const uint8_t* data, int len);
 void      espnow_comm_register_recv_callback(espnow_recv_callback_t cb);
 
-// Module identity — set before calling espnow_comm_send_announce()
-extern uint8_t g_espnow_module_id;
+// Module name — set by sensor before calling espnow_comm_send_announce()
 extern char    g_espnow_module_name[17];
 
 // Suspend/resume RX processing (used by wifi_scan during Wi-Fi scanning)

@@ -38,6 +38,11 @@ typedef struct {
 
 #define MAX_PEERS CONFIG_MAX_PEERS
 
+// New announce handler — auto-assigns module_id if MAC is new
+// Returns the assigned module_id, or 0 on failure (table full).
+// Master-side: called from rx_process_one() on MSG_ANNOUNCE.
+uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name);
+
 void peer_mgr_init(void);
 int  peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name);
 int  peer_mgr_update(const uint8_t* mac, uint8_t module_id, const char* name);
