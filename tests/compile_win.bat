@@ -9,7 +9,13 @@ REM   -Icomponents/*/include comes second for real component headers.
 
 set INC=-Itests/mocks -Icomponents/interpreter/include -Icomponents/espnow_comm/include -Icomponents/hw_drivers/include
 set SRC=tests/main.cpp ^
-  tests/test_stubs.cpp ^
+  tests/lexer_test.cpp ^
+  tests/parser_test.cpp ^
+  tests/interpreter_test.cpp ^
+  tests/builtins_test.cpp ^
+  tests/environment_test.cpp ^
+  tests/protocol_test.cpp ^
+  tests/peer_mgr_test.cpp ^
   tests/mocks/comm_stubs.cpp ^
   components/interpreter/src/lexer.cpp ^
   components/interpreter/src/parser.cpp ^

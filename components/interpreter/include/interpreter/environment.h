@@ -30,6 +30,9 @@ bool env_exists(Environment* env, const char* name);
 Environment* env_alloc(Environment* parent);
 void env_free(Environment* env);
 
+// Reset environment pool (call between scripts to prevent slot leakage)
+void env_pool_reset(void);
+
 // Snapshot / restore for script isolation
 int env_snapshot(Environment* env);
 void env_restore_pristine(Environment* env);

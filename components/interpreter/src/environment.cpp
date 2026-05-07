@@ -96,6 +96,13 @@ void env_free(Environment* env)
     }
 }
 
+void env_pool_reset(void)
+{
+    for (int i = 0; i < CONFIG_ENV_POOL_SIZE; i++) {
+        s_env_pool_used[i] = false;
+    }
+}
+
 int env_snapshot(Environment* env)
 {
     s_pristine_env.parent = env->parent;

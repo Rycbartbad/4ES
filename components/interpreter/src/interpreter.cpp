@@ -228,8 +228,10 @@ void ctx_reset(ExecutionContext* ctx)
 
     memset(ctx->loop_iterations, 0, sizeof(ctx->loop_iterations));
 
-    // Reset global pool tracking arrays so slots are free for next script.
-    // (s_list_used, s_func_used) are zeroed by bif_pools_reset() below.
+    // Reset env pool (function nesting) so sequential scripts don't exhaust slots.
+    env_pool_reset();
+
+    // Reset builtin pools (list + func slots)
     bif_pools_reset();
 }
 
