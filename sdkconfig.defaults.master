@@ -1,0 +1,6 @@
+# ESP-LEGO master firmware defaults
+CONFIG_DEVICE_ROLE_MASTER=y
+# CONFIG_DEVICE_ROLE_SENSOR is not set
+
+# Web Console (master only, useful for configuration + LLM)
+CONFIG_WEB_CONSOLE_ENABLED=y

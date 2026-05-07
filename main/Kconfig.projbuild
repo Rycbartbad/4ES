@@ -16,4 +16,19 @@ config DEVICE_ROLE_SENSOR
 
 endchoice
 
+config SENSOR_MODULE_ID
+    int "Sensor module ID"
+    default 1
+    range 1 255
+    depends on DEVICE_ROLE_SENSOR
+    help
+        Unique identifier for this sensor module.
+
+config SENSOR_MODULE_NAME
+    string "Sensor module name"
+    default "sensor_1"
+    depends on DEVICE_ROLE_SENSOR
+    help
+        Human-readable name for announcements. Example: \"kitchen_temp\"
+
 endmenu

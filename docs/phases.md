@@ -55,7 +55,8 @@ components/script_io/{CMakeLists.txt, include/script_io/*.h, src/*.cpp}
       - 放置在 `components/interpreter/include/interpreter/` 下，被 lexer/parser 共享
 - [ ] **P1.5** 创建 `components/interpreter/Kconfig`：AST_POOL_SIZE, LIST_POOL_SIZE, FUNC_POOL_SIZE, MAX_BINDINGS, MAX_FUNC_PARAMS, MAX_PARSE_DEPTH, MAX_LOOP_ITERATIONS, MAX_SENSOR_CALLS_PER_SCRIPT, MAX_EXEC_STATEMENTS, SCRIPT_EXEC_TIMEOUT_MS, STRICT_MODE, INTERN_TABLE_SIZE
 - [ ] **P1.6** 创建 `components/espnow_comm/Kconfig`：ANNOUNCE_INTERVAL, ANNOUNCE_JITTER, PEER_TIMEOUT, READ_TIMEOUT, COMM_CONCURRENT_CHECK
-- [ ] **P1.7** 验证：`idf.py set-target esp32s3 && idf.py build` 零错误通过
+- [ ] **P1.7** 创建构建脚本：`build_master.bat`（`SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.master`）、`build_sensor.bat`——一条命令构建，无需手动 menuconfig
+- [ ] **P1.8** 验证：`idf.py set-target esp32s3 && idf.py build` 零错误通过
 
 ### 验收标准 (测试用例)
 

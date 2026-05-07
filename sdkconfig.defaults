@@ -1,0 +1,18 @@
+# ESP-LEGO common defaults — shared across all device roles
+#
+# These are the base settings.  Role-specific overrides go in
+# sdkconfig.defaults.master and sdkconfig.defaults.sensor.
+#
+# Build with:
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.master" build
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.sensor" build
+
+# Device role (one of the two below is set by the role-specific defaults)
+# CONFIG_DEVICE_ROLE_MASTER=y
+# CONFIG_DEVICE_ROLE_SENSOR is not set
+
+# Chip target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Serial flasher
+CONFIG_ESPTOOLPY_MONITOR_BAUD_OTHER_VAL=115200

@@ -43,11 +43,18 @@
 #endif
 
 // ====================================================================
-// Sensor identity (configurable at build time or from NVS)
+// Sensor identity (from Kconfig, overrideable via sdkconfig.defaults)
 // ====================================================================
 
-#define SENSOR_MODULE_ID   1
-#define SENSOR_MODULE_NAME "sensor_1"
+#ifndef CONFIG_SENSOR_MODULE_ID
+#define CONFIG_SENSOR_MODULE_ID   1
+#endif
+#ifndef CONFIG_SENSOR_MODULE_NAME
+#define CONFIG_SENSOR_MODULE_NAME "sensor_1"
+#endif
+
+#define SENSOR_MODULE_ID   CONFIG_SENSOR_MODULE_ID
+#define SENSOR_MODULE_NAME CONFIG_SENSOR_MODULE_NAME
 
 // ====================================================================
 // Receive callback — handles DATA_REQ and CMD messages from master
