@@ -73,7 +73,8 @@ static uint8_t  s_current_seq_id    = 0;
 static bool     s_resp_pending       = false;
 static uint8_t  s_resp_expected_mac[6];
 static uint8_t  s_resp_expected_seq  = 0;
-static double   s_resp_value         = 0.0;
+static double   s_resp_values[DATA_RESP_MAX_VALUES];
+static int      s_resp_value_count   = 0;
 
 // Sensor-mode callback
 static espnow_recv_callback_t s_recv_callback = NULL;
@@ -458,12 +459,14 @@ void espnow_comm_handle_resp(const uint8_t* src_mac,
         return;
     }
 
-    // Extract the double value
-    if (!protocol_extract_double(data, len, &s_resp_value)) {
-        ESP_LOGW(TAG, "response: failed to extract double value");
+    // Extract values array from DATA_RESP payload
+    int n = protocol_extract_values(data, len, s_resp_values, DATA_RESP_MAX_VALUES);
+    if (n <= 0) {
+        ESP_LOGW(TAG, "response: failed to extract values");
         COMM_UNLOCK();
         return;
     }
+    s_resp_value_count = n;
 
     // Signal the waiting task
     xSemaphoreGive(s_resp_sem);
@@ -473,7 +476,7 @@ void espnow_comm_handle_resp(const uint8_t* src_mac,
 // ----------------------------------------------------------------
 // Synchronous read request  (master only)
 // ----------------------------------------------------------------
-double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
+int espnow_comm_request_read(uint8_t module_id, double* out_values, int max_values)
 {
 #if CONFIG_DEVICE_ROLE_MASTER
 
@@ -482,7 +485,7 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
     if (s_resp_pending) {
         COMM_UNLOCK();
         ESP_LOGW(TAG, "request_read(%u): concurrent request rejected", module_id);
-        return 0.0;
+        return 0;
     }
 
     // ---- Step 2: find peer and set pending ----
@@ -490,7 +493,7 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
     if (peer == NULL) {
         COMM_UNLOCK();
         ESP_LOGW(TAG, "request_read(%u): peer not found", module_id);
-        return 0.0;
+        return 0;
     }
 
     // TOCTOU-safe: copy MAC inside lock
@@ -502,8 +505,8 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
     COMM_UNLOCK();
 
     // ---- Step 3: retry loop (up to 3 attempts) ----
-    double result = 0.0;
-    bool   got_response = false;
+    int  result_count = 0;
+    bool got_response = false;
 
     for (int retry = 0; retry < 3; retry++) {
         // Each retry gets a new seq_id (design.md §7.3)
@@ -512,7 +515,7 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
 
         uint8_t buf[250];
         size_t  len = 0;
-        protocol_build_data_req(buf, &len, module_id, seq_id, pin);
+        protocol_build_data_req(buf, &len, module_id, seq_id);
 
         COMM_LOCK();
         s_resp_expected_seq = seq_id;
@@ -530,11 +533,15 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
 
         // Wait for response
         if (xSemaphoreTake(s_resp_sem, pdMS_TO_TICKS(CONFIG_READ_TIMEOUT_MS)) == pdTRUE) {
-            // Success — collect value under lock
             COMM_LOCK();
-            result = s_resp_value;
+            int n = s_resp_value_count;
+            if (n > max_values) n = max_values;
+            for (int i = 0; i < n; i++) {
+                out_values[i] = s_resp_values[i];
+            }
             s_resp_pending = false;
             COMM_UNLOCK();
+            result_count = n;
             got_response = true;
             break;
         }
@@ -550,13 +557,14 @@ double espnow_comm_request_read(uint8_t module_id, uint8_t pin)
         ESP_LOGE(TAG, "request_read(%u): timeout after 3 attempts", module_id);
     }
 
-    return result;
+    return result_count;
 
 #else
     // Sensor mode — not supported
     ESP_LOGW(TAG, "request_read called on SENSOR build — ignored");
     (void)module_id;
-    (void)pin;
-    return 0.0;
+    (void)out_values;
+    (void)max_values;
+    return 0;
 #endif
 }

@@ -582,7 +582,7 @@ return 语句通过 `ExecutionContext.has_returned` 传播: `execute_block` 每�
 | `list_peers()` → string | 在线模块列表 |
 | `peer_count()` → number | 在线模块数量 |
 | `peer_online(id)` → bool | 模块是否在线 (支持 number/string 参数) |
-| `remote_read(id)` → number | **远程读取**: 内部通过 ESP-NOW 完成同步请求-响应 (支持 number/string 参数) |
+| `remote_read(id)` → number / list | **远程读取**: 通过 ESP-NOW 同步请求-响应。子模块返回全部传感器值数组。单个传感器返回 number，多个传感器返回 list。支持 number/string 参数 |
 | `espnow_send(id, cmd, data)` → void | 向模块发单向命令 |
 | `list_new(size)` → list | 分配一个指定长度的列表 (初始值 0) |
 | `list_get(lst, i)` → number | 获取列表第 i 个元素 |
@@ -676,15 +676,24 @@ CMD/ACK 配对用于重传：发送时记录 `(seq_id, timestamp)`，若超时�
 | 机制 | 实现 |
 |------|------|
 | 序列号去重 | 每个 PeerEntry 维护 `dedup_seq[8]` 环形位图（§7.1），`dedup_seq[seq_id % 8]` 存储该槽最近 seq_id。新包 hash 匹配槽位值则丢弃，不匹配则写入新值。**注意**：环形位图有哈希冲突（`i ≡ j mod 8` 的 seq_id 共享同一槽），V1.0 接受此风险 |
-| 命令重试 | CMD/DATA_REQ 发送后启动 200ms 超时定时器，未收到 ACK/DATA_RESP 则重发（最多 2 次，合计 3 次尝试）。**每次重试使用新 seq_id**，避免被子模块去重窗口过滤。**约束**: 重试机制假定所有命令操作是幂等的——子模块对同一命令执行多次产生相同结果。当前 V1.0 仅 `CMD_READ_SENSOR`（只读）支持重试。未来增加写操作命令（如电机控制）时，需明确标注是否允许重试 |
+| 命令重试 | CMD/DATA_REQ 发送后启动 200ms 超时定时器，未收到 ACK/DATA_RESP 则重发（最多 2 次，合计 3 次尝试）。**每次重试使用新 seq_id**，避免被子模块去重窗口过滤。**约束**: 重试机制假定所有命令操作是幂等的——子模块对同一命令执行多次产生相同结果。当前 V1.0 仅 `remote_read()`（只读的 DATA_REQ 路径）支持重试。未来增加写操作命令（如电机控制）时，需明确标注是否允许重试 |
 | 宣告包不重试 | ANNOUNCE 为周期性广播，天然冗余，无需重传 |
 | 传输日志 | 每次重传记录 `ESP_LOGW`，3 次均失败记录 `ESP_LOGE` |
 
-### 7.4 命令 ID
+### 7.4 载荷格式与命令 ID
+
+DATA_REQ 无载荷（子模块读取全部传感器），DATA_RESP 使用多值数组格式：
+
+```
+DATA_RESP payload: [1B: value_count][8B × N: double values...]
+```
 
 | 命令 | 值 | 说明 |
 |------|-----|------|
-| CMD_READ_SENSOR | 0x0001 | 读传感器 (DATA_REQ payload: 1B pin; DATA_RESP payload: 8B double value) |
+| (保留) | 0x0000 | DATA_REQ/DATA_RESP 不使用 cmd_id，子模块靠 `msg_type` 分发处理 |
+| 自定义 | 0x0001+ | `espnow_send()` 传递的 cmd_id，子模块 `cmd_task` 中 switch-case 分发 |
+
+> **设计原则**: `cmd_id` 字段仅对 `MSG_CMD` 消息有意义。`MSG_DATA_REQ` 通过消息类型本身即可判定为"读传感器"操作，无需 cmd_id。Script 层保持 `remote_read()` (只读) vs `espnow_send()` (只发) 严格分离。
 
 ### 7.5 同步请求-响应流程 (remote_read)
 
@@ -697,7 +706,7 @@ exec_task (解释器线程):
     → peer_mgr_unlock()
     → 检查 s_resp_pending (comm_lock 保护)
     → 设置 s_resp_pending = true, 复制 dst_mac → s_resp_expected_mac
-    → 构造 DATA_REQ 包 → comm_unlock()
+    → 构造 DATA_REQ 包（无载荷）→ comm_unlock()
     →
     → for (retry = 0; retry <= 2; retry++) {   // 最多 3 次尝试
     →     pkt.seq_id = next_seq_id++;            // 每次重试使用新 seq_id
@@ -708,16 +717,18 @@ exec_task (解释器线程):
     →     ESP_LOGW("remote_read(%d): retry %d", id, retry + 1)
     → }
        │
-       │ ← DATA_RESP 到达 →
-       │   rx_task 收到 0x40
-       │   → comm_lock()
-       │   → 校验包中的 source_mac == s_resp_expected_mac[6]
-       │   → 校验包中的 seq_id == s_resp_expected_seq         // 确保请求‑响应一一对应
-       │   → 匹配: 提取 double 值到 s_resp_value → xSemaphoreGive(resp_sem)
-       │   → 不匹配: 丢弃包, 日志 "响应来源 MAC 不匹配"（或 seq_id 不匹配）
-       │   → comm_unlock()
-       │
-    → return Value(resp_value)         // 被唤醒, 返回值
+        │ ← DATA_RESP 到达 →
+        │   rx_task 收到 0x40
+        │   → comm_lock()
+        │   → 校验包中的 source_mac == s_resp_expected_mac[6]
+        │   → 校验包中的 seq_id == s_resp_expected_seq         // 确保请求‑响应一一对应
+        │   → 匹配: 提取 payload 中的 values 数组 → xSemaphoreGive(resp_sem)
+        │   → 不匹配: 丢弃包, 日志 "响应来源 MAC 不匹配"（或 seq_id 不匹配）
+        │   → comm_unlock()
+        │
+    → 根据 values 数量返回值:
+      count=1 → return Value(num)       // 单传感器，返回数字
+      count>1 → return Value(list)      // 多传感器，返回列表
 
   超时 (3 次均失败, 总耗时 ≈ 600ms):
     → comm_lock(); s_resp_pending = false; comm_unlock()
@@ -992,6 +1003,17 @@ sub_app_main()
 ├── xTaskCreate(announce_task)             // 定期广播宣告
 │
 └── esp_now_register_recv_cb(on_command)   // 仅 xQueueSend → cmd_queue，不直接在 Wi-Fi 任务中操作硬件
+```
+
+DATA_REQ 处理：子模块读取全部预设传感器引脚，打包为多值数组返回：
+
+```
+case MSG_DATA_REQ:
+    double values[N];                      // N = 传感器数量
+    for each sensor pin:
+        values[i] = hw_adc_read(pin);
+    protocol_build_data_resp(buf, &len, id, 0, values, N);
+    esp_now_send(src_mac, buf, len);       // 仅 DATA_RESP，无需 ACK
 ```
 
 > **命令异步化**: 子模块的接收回调不直接操作 GPIO/ADC/PWM（这些操作可能阻塞或耗时），而是将原始数据包入队到 `cmd_queue`（FreeRTOS 静态队列，长度 4）。专用 `cmd_task` 从队列取出并处理：解析 `cmd_id` → 调用 `hw_drivers` → 构造 DATA_RESP/ACK 回复。这避免了 Wi-Fi 任务栈溢出，同时保持主控命令的低延迟响应。`cmd_task` 栈大小 2048 字节即可满足递归调用链。

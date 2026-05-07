@@ -56,41 +56,36 @@
 static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                             const uint8_t* data, int len)
 {
+    (void)data;
+    (void)len;
+
     switch (msg_type) {
 
     case MSG_DATA_REQ: {
-        // DATA_REQ payload: 1 byte (pin number)
-        // Note: data points to payload AFTER MsgHeader, so pin = data[0]
-        if (len < 1) break;
+        // Read ALL local sensor pins and pack them into a structured response.
+        // Submodule firmware defines which pins to read; the master receives
+        // all values and returns them to the script as a list or single number.
+        //
+        // Configure SENSOR_ADC_PINS to match your hardware layout.
+        #define SENSOR_ADC_PINS    {4, 5, 6}       // GPIO pins to read (ADC)
+        #define SENSOR_ADC_COUNT  3
 
-        uint8_t pin = data[0];
+        static const uint8_t s_adc_pins[SENSOR_ADC_COUNT] = SENSOR_ADC_PINS;
+        double values[SENSOR_ADC_COUNT];
 
-        // Read the sensor value (ADC for analog sensors)
-        int raw = hw_adc_read(pin);
+        for (int i = 0; i < SENSOR_ADC_COUNT; i++) {
+            values[i] = (double)hw_adc_read(s_adc_pins[i]);
+        }
 
-        // Build DATA_RESP packet (full message including header)
-        uint8_t resp_buf[64];
+        // Build DATA_RESP with all values
+        uint8_t resp_buf[128];
         size_t  resp_len = 0;
-
-        // seq_id=0 is used since the callback does not pass the header.
-        // The master's comm component still matches the response via the
-        // semaphore-based mechanism (design.md §7.5).
         protocol_build_data_resp(resp_buf, &resp_len,
                                   g_espnow_module_id, 0,
-                                  (double)raw);
+                                  values, SENSOR_ADC_COUNT);
 
         if (resp_len > 0) {
             esp_now_send(src_mac, resp_buf, resp_len);
-        }
-
-        // Send ACK
-        {
-            uint8_t ack_buf[64];
-            size_t ack_len = 0;
-            protocol_build_ack(ack_buf, &ack_len, g_espnow_module_id, 0);
-            if (ack_len > 0) {
-                esp_now_send(src_mac, ack_buf, ack_len);
-            }
         }
         break;
     }

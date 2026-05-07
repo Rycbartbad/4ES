@@ -39,33 +39,38 @@ void protocol_build_announce(uint8_t* buf, size_t* len, uint8_t module_id, const
 }
 
 void protocol_build_data_req(uint8_t* buf, size_t* len,
-                             uint8_t target_id, uint8_t seq_id, uint8_t pin)
+                             uint8_t target_id, uint8_t seq_id)
 {
     MsgHeader* hdr = (MsgHeader*)buf;
     hdr->version   = MSG_VERSION;
     hdr->msg_type  = MSG_DATA_REQ;
     hdr->target_id = target_id;
     hdr->seq_id    = seq_id;
-    hdr->cmd_id    = CMD_READ_SENSOR;
-    hdr->payload_len = DATA_REQ_PIN_SIZE;
+    hdr->cmd_id    = 0;
+    hdr->payload_len = 0;           // no payload — submodule reads all its sensors
 
-    buf[MSG_HEADER_SIZE] = pin;
-    *len = MSG_HEADER_SIZE + DATA_REQ_PIN_SIZE;
+    *len = MSG_HEADER_SIZE;
 }
 
 void protocol_build_data_resp(uint8_t* buf, size_t* len,
-                              uint8_t target_id, uint8_t seq_id, double value)
+                              uint8_t target_id, uint8_t seq_id,
+                              const double* values, uint8_t value_count)
 {
     MsgHeader* hdr = (MsgHeader*)buf;
-    hdr->version   = MSG_VERSION;
-    hdr->msg_type  = MSG_DATA_RESP;
-    hdr->target_id = target_id;
-    hdr->seq_id    = seq_id;
-    hdr->cmd_id    = 0;
-    hdr->payload_len = DATA_RESP_VAL_SIZE;
+    hdr->version    = MSG_VERSION;
+    hdr->msg_type   = MSG_DATA_RESP;
+    hdr->target_id  = target_id;
+    hdr->seq_id     = seq_id;
+    hdr->cmd_id     = 0;
 
-    memcpy(buf + MSG_HEADER_SIZE, &value, sizeof(double));
-    *len = MSG_HEADER_SIZE + DATA_RESP_VAL_SIZE;
+    uint8_t* pay = buf + MSG_HEADER_SIZE;
+    pay[0] = value_count;
+    for (uint8_t i = 0; i < value_count && i < DATA_RESP_MAX_VALUES; i++) {
+        memcpy(pay + DATA_RESP_COUNT_SIZE + i * 8, &values[i], 8);
+    }
+
+    hdr->payload_len = DATA_RESP_COUNT_SIZE + value_count * 8;
+    *len = MSG_HEADER_SIZE + hdr->payload_len;
 }
 
 void protocol_build_ack(uint8_t* buf, size_t* len,
@@ -123,15 +128,32 @@ bool protocol_parse_header(const uint8_t* data, int len, MsgHeader* header_out)
     return true;
 }
 
-bool protocol_extract_double(const uint8_t* data, int len, double* value_out)
+int protocol_extract_values(const uint8_t* data, int len,
+                            double* out_values, int max_values)
 {
-    if (data == NULL || value_out == NULL) {
-        return false;
-    }
-    if (len < (int)(MSG_HEADER_SIZE + DATA_RESP_VAL_SIZE)) {
-        return false;
+    if (data == NULL || out_values == NULL || max_values <= 0) {
+        return 0;
     }
 
-    memcpy(value_out, data + MSG_HEADER_SIZE, sizeof(double));
-    return true;
+    int payload_avail = len - (int)MSG_HEADER_SIZE;
+    if (payload_avail < DATA_RESP_COUNT_SIZE) {
+        return 0;
+    }
+
+    const uint8_t* pay = data + MSG_HEADER_SIZE;
+    uint8_t count = pay[0];
+
+    int expected = DATA_RESP_COUNT_SIZE + count * 8;
+    if (payload_avail < expected) {
+        return 0;   // truncated
+    }
+    if (count > DATA_RESP_MAX_VALUES) {
+        count = DATA_RESP_MAX_VALUES;  // clamp
+    }
+
+    int n = (count < max_values) ? count : max_values;
+    for (int i = 0; i < n; i++) {
+        memcpy(&out_values[i], pay + DATA_RESP_COUNT_SIZE + i * 8, 8);
+    }
+    return n;
 }

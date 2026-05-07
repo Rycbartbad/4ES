@@ -19,10 +19,11 @@ void track_output_pin(uint8_t pin) {
 extern "C" {
 #endif
 
-double espnow_comm_request_read(uint8_t module_id, uint8_t pin) {
+int espnow_comm_request_read(uint8_t module_id, double* out_values, int max_values) {
     (void)module_id;
-    (void)pin;
-    return 0.0;
+    (void)out_values;
+    (void)max_values;
+    return 0;
 }
 
 int espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id,

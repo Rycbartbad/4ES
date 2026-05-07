@@ -19,8 +19,16 @@ typedef enum {
     MSG_ACK        = 0x50,
 } MsgType;
 
-// Command IDs
-#define CMD_READ_SENSOR  0x0001
+// ── Data exchange (msg_type-driven) ──
+// DATA_REQ → submodule reads ALL its sensors → replies DATA_RESP
+//            cmd_id is unused (set to 0), payload is empty.
+// CMD      → submodule dispatches on cmd_id (see §Command IDs below)
+
+// ── Command IDs (0x0001–0xFFFF, only meaningful for MSG_CMD) ──
+// Define custom commands here and add handler branches in the
+// submodule's cmd_task.  Examples:
+//   #define CMD_MOTOR_STOP   0x0001
+//   #define CMD_LED_POWER_ON 0x0002
 
 // Message header — design.md §7.2
 typedef struct __attribute__((packed)) {
@@ -34,22 +42,25 @@ typedef struct __attribute__((packed)) {
 
 #define MSG_HEADER_SIZE sizeof(MsgHeader)
 
-// Payload formats — design.md §7.4
-// DATA_REQ:  1 byte (pin number)
-// DATA_RESP: 8 bytes (double value)
-#define DATA_REQ_PIN_SIZE  1
-#define DATA_RESP_VAL_SIZE 8
+// ── DATA_RESP payload format ──
+// [1B: value_count][8B × N: double values]
+// Submodule packs all its sensor readings into a single response.
+// The master parses the array and returns it to the script as a list.
+#define DATA_RESP_MAX_VALUES 16        // max doubles per response
+#define DATA_RESP_COUNT_SIZE 1
+#define DATA_RESP_PAYLOAD_MIN_SIZE (DATA_RESP_COUNT_SIZE + 0)           // 0 values
+#define DATA_RESP_PAYLOAD_MAX_SIZE (DATA_RESP_COUNT_SIZE + DATA_RESP_MAX_VALUES * 8)
 
 // Packet builders
 void protocol_build_announce(uint8_t* buf, size_t* len, uint8_t module_id, const char* name);
-void protocol_build_data_req(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, uint8_t pin);
-void protocol_build_data_resp(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, double value);
+void protocol_build_data_req(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
+void protocol_build_data_resp(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, const double* values, uint8_t value_count);
 void protocol_build_ack(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
 void protocol_build_cmd(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, uint16_t cmd_id, const uint8_t* payload, uint8_t payload_len);
 
 // Packet parsers
 bool protocol_parse_header(const uint8_t* data, int len, MsgHeader* header_out);
-bool protocol_extract_double(const uint8_t* data, int len, double* value_out);
+int  protocol_extract_values(const uint8_t* data, int len, double* out_values, int max_values);
 
 #ifdef __cplusplus
 }

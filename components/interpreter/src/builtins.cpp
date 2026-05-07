@@ -486,7 +486,7 @@ static Value bif_peer_online(Value* args, int n, ExecutionContext* ctx)
 }
 
 // ====================================================================
-// 10. remote_read(module_id [, pin]) — synchronous ESP-NOW sensor read
+// 10. remote_read(module_id) — synchronous ESP-NOW multi-sensor read
 // ====================================================================
 
 static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
@@ -497,15 +497,11 @@ static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
     if (sensor_call_check(ctx)) return bval_num(0);
 
     uint8_t module_id = 0;
-    uint8_t pin       = 0;
     bool    found     = false;
 
     if (args[0].type == VAL_NUM) {
         module_id = (uint8_t)args[0].num;
         found     = true;
-        if (n >= 2 && args[1].type == VAL_NUM) {
-            pin = (uint8_t)args[1].num;
-        }
     } else if (args[0].type == VAL_STR && args[0].str) {
         bool conflict = false;
         PeerEntry* peer = peer_mgr_find_by_name(args[0].str, &conflict);
@@ -520,16 +516,33 @@ static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
         if (peer) {
             module_id = peer->module_id;
             found     = true;
-            if (n >= 2 && args[1].type == VAL_NUM) {
-                pin = (uint8_t)args[1].num;
-            }
         }
     }
 
-    if (found) {
-        return bval_num(espnow_comm_request_read(module_id, pin));
+    if (!found) return bval_num(0);
+
+    // Fetch all sensor values from the remote module
+    double values[DATA_RESP_MAX_VALUES];
+    int count = espnow_comm_request_read(module_id, values, DATA_RESP_MAX_VALUES);
+
+    if (count <= 0) return bval_num(0.0);
+
+    // Single value → return as number (backward compatible)
+    if (count == 1) return bval_num(values[0]);
+
+    // Multiple values → return as a list
+    ListData* lst = bif_pool_alloc();
+    if (!lst) {
+        ctx->constraint_violated = true;
+        ctx->violation_msg       = "List pool exhausted";
+        return bval_num(0.0);
     }
-    return bval_num(0);
+
+    lst->len = (count > 16) ? 16 : count;
+    for (int i = 0; i < lst->len; i++) {
+        lst->data[i] = values[i];
+    }
+    return bval_list(lst);
 }
 
 // ====================================================================

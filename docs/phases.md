@@ -99,9 +99,9 @@ components/script_io/{CMakeLists.txt, include/script_io/*.h, src/*.cpp}
       - seq_id 机制详见 design.md §7.3
       - 接收方每个 PeerEntry 独立维护 `uint8_t dedup_seq[8]` 滑动窗口（design.md §5.1）
       - 协议版本校验：接收方检查 version 字段，不匹配时日志警告
-- [ ] **P2.1.3** cmd_id 常量：CMD_READ_SENSOR=0x0001
+- [ ] **P2.1.3** cmd_id 仅对 `MSG_CMD` 有意义（0x0002+）；`MSG_DATA_REQ` 靠 msg_type 分发，cmd_id 置 0
 - [ ] **P2.1.4** 宣告包构造/解析函数（详见 design.md §4.2）
-- [ ] **P2.1.5** 载荷格式定义：CMD 的 DATA_REQ 载荷 = 1B pin 编号；DATA_RESP 载荷 = 8B double（design.md §7.4）
+- [ ] **P2.1.5** 载荷格式定义：DATA_REQ 无载荷（子模块读取全部传感器）；DATA_RESP 载荷 = `[1B count][8B × count: double values]`（design.md §7.4）
 
 #### P2.2 Peer 管理器 (peer_mgr.h/cpp)
 

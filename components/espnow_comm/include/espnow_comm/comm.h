@@ -9,13 +9,18 @@
 extern "C" {
 #endif
 
+#include "protocol.h"
+
 // ESP-NOW communication API — design.md §7
 
 esp_err_t espnow_comm_init(void);
 void      espnow_comm_deinit(void);
 
 // Synchronous read request (master only) — design.md §7.5
-double    espnow_comm_request_read(uint8_t module_id, uint8_t pin);
+// Sends DATA_REQ, waits for DATA_RESP, returns the count of values
+// received (0 on timeout).  Submodule returns ALL its sensor readings
+// in a single response; the caller doesn't need to specify a pin.
+int       espnow_comm_request_read(uint8_t module_id, double* out_values, int max_values);
 
 // Response handler — design.md §7.7
 void      espnow_comm_handle_resp(const uint8_t* src_mac, const uint8_t* data, int len);
