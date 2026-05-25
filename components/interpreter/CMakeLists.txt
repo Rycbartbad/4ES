@@ -1,0 +1,10 @@
+idf_component_register(SRCS "src/ast.cpp"
+                              "src/lexer.cpp"
+                              "src/parser.cpp"
+                              "src/interpreter.cpp"
+                              "src/environment.cpp"
+                              "src/builtins.cpp"
+                              "src/intern.cpp"
+                       INCLUDE_DIRS "include"
+                       REQUIRES ""
+                       PRIV_REQUIRES "espnow_comm" "hw_drivers" "freertos")

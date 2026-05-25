@@ -1,0 +1,58 @@
+menu "ESP-LEGO Web Console"
+
+    config WEB_CONSOLE_ENABLED
+        bool "Enable web console (SoftAP + HTTP server + LLM client)"
+        default y
+        help
+            When enabled, the master firmware creates a SoftAP hotspot
+            "ESP-LEGO-Setup" on first boot (or BOOT button long-press)
+            and serves a web configuration page at 192.168.4.1.
+
+    config WEB_CONSOLE_TIMEOUT_SEC
+        int "Auto-exit config mode after (seconds)"
+        default 300
+        range 0 3600
+        help
+            Inactivity timeout for the web console config mode.
+            Set to 0 to disable auto-exit.
+
+    config WIFI_SCAN_SHOW_5GHZ
+        bool "Show 5GHz networks in scan results"
+        default n
+        help
+            ESP32-S3 is 2.4 GHz only. Showing 5 GHz SSIDs is
+            informational only (they cannot be connected).
+
+    config BUTTON_PIN
+        int "GPIO pin for entering config mode"
+        default 0
+        range 0 39
+        help
+            Long-press (3 s) on this pin triggers the ESP-LEGO-Setup
+            SoftAP.  Default GPIO 0 is the BOOT button on most boards.
+
+    config SOFTAP_CHANNEL
+        int "SoftAP Wi-Fi channel"
+        default 1
+        range 1 11
+        help
+            Channel for the SoftAP hotspot.  Must match the channel
+            your ESP-NOW network is configured for.
+
+    config EXEC_LOG_BUF_SIZE
+        int "Print output ring buffer size (bytes)"
+        default 4096
+        range 1024 16384
+        help
+            Circular buffer for capturing print() output from running
+            scripts.  Visible via the web UI /api/exec_log endpoint.
+
+    config HTTP_SERVER_STACK_SIZE
+        int "HTTP server task stack size"
+        default 6144
+        range 4096 16384
+        help
+            Stack size for the esp_http_server task that handles
+            web console requests.
+
+endmenu

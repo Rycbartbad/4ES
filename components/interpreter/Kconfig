@@ -1,0 +1,116 @@
+menu "ESP-LEGO Interpreter"
+
+config AST_POOL_SIZE
+    int "AST node pool size"
+    default 256
+    range 64 4096
+    help
+        Number of AST nodes in the static pool.
+        Each node is ~40 bytes. 256 × 40 = ~10KB RAM.
+
+config LIST_POOL_SIZE
+    int "List object pool size"
+    default 8
+    range 0 64
+    help
+        Number of list objects (each ~136 bytes).
+        0 disables list support. 8 × 136 ≈ 1KB RAM.
+
+config FUNC_POOL_SIZE
+    int "User function pool size"
+    default 16
+    range 0 64
+    help
+        Number of user-defined function objects.
+        0 disables user functions. 16 × ~20 = 320 bytes.
+
+config MAX_BINDINGS
+    int "Max bindings per scope"
+    default 32
+    range 16 128
+    help
+        Maximum variable/function bindings per environment scope.
+        Built-in functions consume ~21 slots.
+
+config MAX_FUNC_PARAMS
+    int "Max function parameters"
+    default 8
+    range 1 16
+    help
+        Maximum number of parameters per user-defined function.
+
+config MAX_PARSE_DEPTH
+    int "Max recursive parse depth"
+    default 32
+    range 16 256
+    help
+        Maximum nesting depth for recursive-descent parser.
+        32 × 120B/stack-frame ≈ 4KB worst-case on 8KB task stack.
+
+config MAX_EXEC_DEPTH
+    int "Max recursive execution depth"
+    default 64
+    range 16 256
+    help
+        Maximum nesting depth for interpreter recursion
+        (execute_block/eval/execute_while). Independent of parse_depth.
+
+config MAX_LOOP_ITERATIONS
+    int "Max total loop iterations"
+    default 10000
+    range 100 1000000
+    help
+        Total loop iterations across all nesting levels per script.
+        Prevents runaway while loops.
+
+config MAX_SENSOR_CALLS_PER_SCRIPT
+    int "Max sensor calls per script"
+    default 20
+    range 5 200
+    help
+        Maximum number of remote_read() calls per script execution.
+        Limits ESP-NOW channel usage.
+
+config MAX_EXEC_STATEMENTS
+    int "Max executed statements per script"
+    default 50000
+    range 1000 500000
+    help
+        Hard limit on total statements executed per script invocation.
+        Catches pathological scripts not caught by other limits.
+
+config SCRIPT_EXEC_TIMEOUT_MS
+    int "Script execution watchdog timeout (ms)"
+    default 30000
+    range 1000 600000
+    help
+        FreeRTOS timer timeout for script execution watchdog.
+        Timer is started before execution and stopped on completion.
+        On expiry, s_script_timeout flag is set atomically.
+
+config STRICT_MODE
+    bool "Strict error handling"
+    default y
+    help
+        When enabled: undefined variable access, type mismatches,
+        and other runtime errors halt script execution.
+        When disabled: errors produce warnings with default values.
+
+config INTERN_TABLE_SIZE
+    int "String intern table size"
+    default 128
+    range 32 512
+    help
+        Number of unique strings that can be interned.
+        Each entry holds up to 64 bytes. 128 × 64 = 8KB .bss.
+
+config ENV_POOL_SIZE
+    int "Environment pool size (function nesting)"
+    default 4
+    range 1 16
+    help
+        Number of pre-allocated Environment objects for nested
+        function call scopes. Each scope is ~528 bytes.
+        4 × 528 ≈ 2KB RAM.
+
+endmenu

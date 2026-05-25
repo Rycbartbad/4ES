@@ -1,0 +1,59 @@
+menu "ESP-LEGO ESP-NOW Comm"
+
+config ANNOUNCE_INTERVAL_MS
+    int "Announce broadcast interval (ms)"
+    default 3000
+    range 1000 30000
+    help
+        Interval between peer announcement broadcasts.
+        Shorter = faster discovery, more airtime usage.
+
+config ANNOUNCE_JITTER_MS
+    int "Announce jitter (±ms)"
+    default 200
+    range 0 1000
+    help
+        Random jitter added to announce interval to prevent
+        collision when multiple devices power on simultaneously.
+
+config PEER_TIMEOUT_MS
+    int "Peer timeout before OFFLINE (ms)"
+    default 10000
+    range 2000 60000
+    help
+        If no announce received from a peer within this time,
+        its state transitions to OFFLINE.
+
+config PEER_PENDING_TIMEOUT_MS
+    int "PENDING_CHANGE fallback timeout (ms)"
+    default 6500
+    range 1000 30000
+    help
+        Time to wait in PENDING_CHANGE state before reverting
+        to ACTIVE. Default 6500 = ANNOUNCE_INTERVAL × 2 + 500ms.
+
+config MAX_PEERS
+    int "Maximum tracked peers"
+    default 20
+    range 5 50
+    help
+        Maximum number of peer entries in the static peer table.
+        20 × ~64 bytes ≈ 1.3KB RAM.
+
+config READ_TIMEOUT_MS
+    int "Sync request timeout (ms)"
+    default 200
+    range 50 2000
+    help
+        Timeout for a single synchronous read request.
+        After timeout, request_read returns with value 0.
+
+config COMM_CONCURRENT_CHECK
+    bool "Block concurrent sync requests"
+    default y
+    help
+        When enabled, only one sync request can be pending at a time.
+        Concurrent requests are rejected with a log warning.
+        V1.1 will add queueing.
+
+endmenu
