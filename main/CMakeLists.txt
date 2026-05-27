@@ -7,7 +7,7 @@ endif()
 
 idf_component_register(SRCS "${MAIN_SRCS}"
                        INCLUDE_DIRS ""
-                         REQUIRES interpreter espnow_comm hw_drivers script_io web_console nvs_flash)
+                         REQUIRES interpreter espnow_comm hw_drivers script_io web_console nvs_flash lcd_touch)
 
 # C++17 required (TC-P1.1)
 set(CMAKE_CXX_STANDARD 17)

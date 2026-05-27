@@ -37,6 +37,8 @@
 
 #include "hw_drivers/drivers.h"
 
+#include "lcd_touch/lcd_touch.h"
+
 #include "espnow_comm/peer_mgr.h"
 #include "espnow_comm/comm.h"
 
@@ -146,6 +148,17 @@ extern "C" void app_main(void)
 
     // ---- 2. Initialise ESP-NOW (Wi-Fi + peer_mgr + rx_task) ----
     ESP_ERROR_CHECK(espnow_comm_init());
+
+    // ---- 2b. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
+    {
+        esp_err_t lcd_ret = lcd_touch_init();
+        if (lcd_ret != ESP_OK) {
+            ESP_LOGW(TAG, "LCD/Touch init skipped (%s), continuing",
+                     esp_err_to_name(lcd_ret));
+        } else {
+            ESP_LOGI(TAG, "LCD + Touch ready");
+        }
+    }
 
     // ---- 3. Initialise interpreter ----
     ast_pool_init();
