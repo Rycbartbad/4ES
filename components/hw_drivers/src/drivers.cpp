@@ -7,6 +7,12 @@
 
 static const char* TAG = "hw_drivers";
 
+#ifdef ADC_ATTEN_DB_12
+#define HW_ADC_ATTEN ADC_ATTEN_DB_12
+#else
+#define HW_ADC_ATTEN ADC_ATTEN_DB_11
+#endif
+
 int hw_gpio_read(uint8_t pin)
 {
     gpio_set_direction((gpio_num_t)pin, GPIO_MODE_INPUT);
@@ -39,7 +45,7 @@ int hw_adc_read(uint8_t pin)
             break;
     }
     adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(channel, ADC_ATTEN_DB_12);
+    adc1_config_channel_atten(channel, HW_ADC_ATTEN);
     return adc1_get_raw(channel);
 }
 

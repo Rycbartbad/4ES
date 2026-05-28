@@ -1,34 +1,22 @@
 @echo off
-REM Build / flash / monitor ESP-LEGO sensor firmware
+setlocal
 
-if "%IDF_PATH%"=="" (
-    echo Exporting IDF environment...
-    call d:\IDF_v5.2.6\v5.2.6\esp-idf\export.bat
+REM Convenience wrapper for ESP-LEGO offline sensor firmware.
+REM Preferred direct usage:
+REM   powershell -ExecutionPolicy Bypass -File sensor_test.ps1 build
+REM   powershell -ExecutionPolicy Bypass -File sensor_test.ps1 flash-monitor -Port COM19
+
+set ACTION=%1
+set PORT=%2
+
+if "%ACTION%"=="" set ACTION=build
+
+set SCRIPT_DIR=%~dp0
+set PS_ARGS=-ExecutionPolicy Bypass -File "%SCRIPT_DIR%sensor_test.ps1" %ACTION%
+
+if not "%PORT%"=="" (
+    set PS_ARGS=%PS_ARGS% -Port %PORT%
 )
 
-set SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.sensor
-
-if "%1"=="flash" goto flash
-if "%1"=="monitor" goto monitor
-
-echo Building SENSOR firmware...
-idf.py build
-if %ERRORLEVEL% equ 0 (
-    echo.
-    echo SENSOR BUILD OK
-    echo   build_sensor.bat flash    - flash to device
-    echo   build_sensor.bat monitor  - serial monitor
-) else (
-    echo.
-    echo BUILD FAILED
-)
-exit /b %ERRORLEVEL%
-
-:flash
-echo Flashing SENSOR firmware...
-idf.py flash
-exit /b %ERRORLEVEL%
-
-:monitor
-idf.py monitor
+powershell %PS_ARGS%
 exit /b %ERRORLEVEL%
