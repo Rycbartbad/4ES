@@ -132,16 +132,24 @@ esp_err_t espnow_comm_init(void)
     ESP_LOGI(TAG, "STA netif created: %p", (void*)sta_netif);
 
     // IMPORTANT: Must set mode BEFORE esp_wifi_start().
-    // Always start in STA mode. For master, start_softap() in
-    // web_console.cpp later calls set_mode(APSTA) to transition
-    // the running WiFi instance — this fires WIFI_EVENT_AP_START
-    // AFTER the AP netif handler is registered, ensuring DHCP
-    // starts reliably even when AP config persisted in NVS.
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    // Use APSTA mode (not pure STA) to avoid BSSID broadcast filtering.
+    // In pure STA mode, ESP32-S3/C3 WiFi hardware drops broadcast packets
+    // from non-AP sources (espressif/esp-now#57). APSTA mode disables
+    // this filter, allowing ESP-NOW broadcast reception.
+    // For master, web_console.cpp start_softap() will transition to full
+    // APSTA later, so this is also a compatible starting point.
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_mode failed: %d", ret);
         return ret;
     }
+
+    // Initialize STA config (empty SSID) — required for proper WiFi MAC
+    // initialization on ESP32-S3 even when not connecting to an AP.
+    wifi_config_t wifi_config = {};
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    // Store WiFi config in RAM only, not NVS (avoids stale config interference)
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
@@ -297,14 +305,28 @@ void espnow_comm_register_recv_callback(espnow_recv_callback_t cb)
 // ----------------------------------------------------------------
 static void espnow_send_cb(const uint8_t* mac_addr, esp_now_send_status_t status)
 {
+    static int s_send_fail_count = 0;
     if (status != ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGW(TAG, "send status: %d", (int)status);
+        s_send_fail_count++;
+        ESP_LOGW(TAG, "send status: %d (fail #%d)", (int)status, s_send_fail_count);
     }
 }
 
 static void espnow_recv_cb(const esp_now_recv_info_t* info,
                            const uint8_t* data, int len)
 {
+    // Diagnostic: log every received packet (at most first 3, then periodic)
+    static int s_recv_count = 0;
+    s_recv_count++;
+    if (s_recv_count <= 3 || s_recv_count % 100 == 0) {
+        if (info && info->src_addr) {
+            ESP_LOGI(TAG, "ESP-NOW rx #%d: src=" MACSTR " len=%d",
+                     s_recv_count, MAC2STR(info->src_addr), len);
+        } else {
+            ESP_LOGI(TAG, "ESP-NOW rx #%d: src=NULL len=%d", s_recv_count, len);
+        }
+    }
+
     if (info == NULL || data == NULL || len <= 0 || len > 250) return;
     if (s_rx_queue == NULL) return;
 

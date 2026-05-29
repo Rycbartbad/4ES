@@ -49,10 +49,12 @@ menu "ESP-LEGO Web Console"
 
     config HTTP_SERVER_STACK_SIZE
         int "HTTP server task stack size"
-        default 6144
-        range 4096 16384
+        default 10240
+        range 4096 32768
         help
             Stack size for the esp_http_server task that handles
-            web console requests.
+            web console requests. Increased from 6144 to 10240
+            to prevent stack overflow when handling captive portal
+            redirects and LLM API responses concurrently.
 
 endmenu
