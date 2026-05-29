@@ -1,4 +1,4 @@
-# ESP-LEGO common defaults — shared across all device roles
+# ESP-LEGO common defaults -- shared across all device roles
 #
 # These are the base settings.  Role-specific overrides go in
 # sdkconfig.defaults.master and sdkconfig.defaults.sensor.
