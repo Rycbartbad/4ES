@@ -56,4 +56,14 @@ config COMM_CONCURRENT_CHECK
         Concurrent requests are rejected with a log warning.
         V1.1 will add queueing.
 
+config MAX_CAPABILITY_LEN
+    int "Maximum capability descriptor length"
+    default 128
+    range 32 233
+    help
+        Max length of the capability descriptor string sent in MSG_ANNOUNCE.
+        The descriptor describes the sensor's function, data format, etc.
+        and is displayed in the web console + injected into LLM prompts.
+        Max 233 bytes to fit within ESP-NOW 250-byte payload limit.
+
 endmenu

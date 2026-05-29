@@ -22,6 +22,24 @@ void hw_gpio_write(uint8_t pin, int val)
 int hw_adc_read(uint8_t pin)
 {
     adc1_channel_t channel;
+#if CONFIG_IDF_TARGET_ESP32C3
+    // ESP32-C3 has ADC1 channels on GPIO 0-4 only
+    switch (pin) {
+        case 0:  channel = ADC1_CHANNEL_0; break;
+        case 1:  channel = ADC1_CHANNEL_1; break;
+        case 2:  channel = ADC1_CHANNEL_2; break;
+        case 3:  channel = ADC1_CHANNEL_3; break;
+        case 4:  channel = ADC1_CHANNEL_4; break;
+        default:
+            ESP_LOGW(TAG, "ADC pin %u not mapped (C3: GPIO 0-4 only), using ch0", pin);
+            channel = ADC1_CHANNEL_0;
+            break;
+    }
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(channel, ADC_ATTEN_DB_12);
+    return adc1_get_raw(channel);
+#else
+    // ESP32-S3 has ADC1 channels on GPIO 1-10
     switch (pin) {
         case 1:  channel = ADC1_CHANNEL_0; break;
         case 2:  channel = ADC1_CHANNEL_1; break;
@@ -41,6 +59,7 @@ int hw_adc_read(uint8_t pin)
     adc1_config_width(ADC_WIDTH_BIT_12);
     adc1_config_channel_atten(channel, ADC_ATTEN_DB_12);
     return adc1_get_raw(channel);
+#endif
 }
 
 void hw_pwm_write(uint8_t pin, int val)

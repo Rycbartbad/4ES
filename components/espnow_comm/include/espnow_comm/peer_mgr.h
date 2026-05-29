@@ -19,11 +19,15 @@ typedef enum {
 
 #define PEER_ID_STR_LEN 22   // "aa:bb:cc:dd:ee:ff:255\0" = 21 + 1
 
+#ifndef CONFIG_MAX_CAPABILITY_LEN
+#define CONFIG_MAX_CAPABILITY_LEN 128
+#endif
+
 typedef struct {
     uint8_t  mac[6];
     uint8_t  module_id;
     char     name[17];        // max 16 chars + null
-    uint32_t capabilities;    // bitmask (reserved)
+    char     capability[CONFIG_MAX_CAPABILITY_LEN]; // sensor descriptor
     PeerState state;
     TickType_t last_seen;
     TickType_t pending_change_tick;
@@ -41,7 +45,7 @@ typedef struct {
 // New announce handler — auto-assigns module_id if MAC is new
 // Returns the assigned module_id, or 0 on failure (table full).
 // Master-side: called from rx_process_one() on MSG_ANNOUNCE.
-uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name);
+uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name, const char* capability);
 
 void peer_mgr_init(void);
 int  peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name);

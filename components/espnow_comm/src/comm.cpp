@@ -37,9 +37,10 @@
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 
 // ----------------------------------------------------------------
-// Module name (set by sensor before send_announce)
+// Module name + capability (set by sensor before send_announce)
 // ----------------------------------------------------------------
 char    g_espnow_module_name[17] = "sensor";
+char    g_espnow_module_capability[CONFIG_MAX_CAPABILITY_LEN] = "";
 
 // ----------------------------------------------------------------
 // Log tag
@@ -120,12 +121,6 @@ esp_err_t espnow_comm_init(void)
         return ret;
     }
 
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(STA) failed: %d", ret);
-        return ret;
-    }
-
     // Create STA netif BEFORE esp_wifi_start().
     // Without this, lwIP has no netif for STA, DHCP never runs,
     // GOT_IP never fires, and all internet connectivity fails.
@@ -135,6 +130,18 @@ esp_err_t espnow_comm_init(void)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "STA netif created: %p", (void*)sta_netif);
+
+    // IMPORTANT: Must set mode BEFORE esp_wifi_start().
+    // Always start in STA mode. For master, start_softap() in
+    // web_console.cpp later calls set_mode(APSTA) to transition
+    // the running WiFi instance — this fires WIFI_EVENT_AP_START
+    // AFTER the AP netif handler is registered, ensuring DHCP
+    // starts reliably even when AP config persisted in NVS.
+    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode failed: %d", ret);
+        return ret;
+    }
 
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
@@ -341,11 +348,15 @@ static int rx_process_one(void)
     switch (hdr.msg_type) {
 
     case MSG_ANNOUNCE: {
-        // Payload: [16B name (zero-padded)] — no module_id (master assigns it)
 #if CONFIG_DEVICE_ROLE_MASTER
-        if (item.len < (int)(MSG_HEADER_SIZE + 1)) break;
-        const char* ann_name = (const char*)(item.data + MSG_HEADER_SIZE);
-        peer_mgr_handle_announce(item.src_mac, ann_name);
+        // Minimum: hdr(5) + name(16) = 21 bytes
+        if (item.len < (int)(MSG_HEADER_SIZE + 16)) break;
+        char ann_name[32];
+        char ann_cap[CONFIG_MAX_CAPABILITY_LEN];
+        protocol_parse_announce(item.data, item.len,
+                                 ann_name, sizeof(ann_name),
+                                 ann_cap, sizeof(ann_cap));
+        peer_mgr_handle_announce(item.src_mac, ann_name, ann_cap);
 #endif
         break;
     }
@@ -384,7 +395,8 @@ void espnow_comm_send_announce(void)
     uint8_t buf[250];
     size_t  len = 0;
 
-    protocol_build_announce(buf, &len, g_espnow_module_name);
+    protocol_build_announce(buf, &len, g_espnow_module_name,
+                             g_espnow_module_capability);
 
     esp_err_t ret = esp_now_send(s_broadcast_mac, buf, len);
     if (ret != ESP_OK) {

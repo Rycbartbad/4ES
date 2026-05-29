@@ -4,3 +4,10 @@ CONFIG_DEVICE_ROLE_MASTER=y
 
 # Web Console (master only, useful for configuration + LLM)
 CONFIG_WEB_CONSOLE_ENABLED=y
+
+# Master firmware with LCD + touch + interpreter is ~1.05MB;
+# need the large (1500K) app partition instead of default 1M.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_WEB_CONSOLE_ENABLED=y

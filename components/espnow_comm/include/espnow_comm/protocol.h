@@ -52,7 +52,7 @@ typedef struct __attribute__((packed)) {
 #define DATA_RESP_PAYLOAD_MAX_SIZE (DATA_RESP_COUNT_SIZE + DATA_RESP_MAX_VALUES * 8)
 
 // Packet builders
-void protocol_build_announce(uint8_t* buf, size_t* len, const char* name);
+void protocol_build_announce(uint8_t* buf, size_t* len, const char* name, const char* capability);
 void protocol_build_data_req(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
 void protocol_build_data_resp(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, const double* values, uint8_t value_count);
 void protocol_build_ack(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
@@ -61,6 +61,7 @@ void protocol_build_cmd(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t se
 // Packet parsers
 bool protocol_parse_header(const uint8_t* data, int len, MsgHeader* header_out);
 int  protocol_extract_values(const uint8_t* data, int len, double* out_values, int max_values);
+bool protocol_parse_announce(const uint8_t* data, int len, char* name_out, int name_max, char* cap_out, int cap_max);
 
 #ifdef __cplusplus
 }

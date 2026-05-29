@@ -380,7 +380,11 @@ static const char* s_html_page =
 " if(!r)return;"
 " var html='';"
 " if(r.peers&&r.peers.length>0){"
-"  r.peers.forEach(function(p){html+=p+'<br>'})"
+"  r.peers.forEach(function(p){"
+"   html+='<b>'+p.name+'</b> (id='+p.id+')';"
+"   if(p.capability){html+='<br><span style=font-size:11px;color:#90a4ae>'+p.capability+'</span>'}"
+"   html+='<br>'"
+"  })"
 " }else{"
 "  html='<span class=\"info\">No devices online</span>'"
 " }"
@@ -542,10 +546,12 @@ static esp_err_t status_get_handler(httpd_req_t* req)
     int count = 0;
     PeerEntry** list = peer_mgr_list(&count);
     for (int i = 0; i < count; i++) {
-        char line[32];
-        snprintf(line, sizeof(line), "%u:%s",
-                 list[i]->module_id, list[i]->name);
-        cJSON_AddItemToArray(peers_json, cJSON_CreateString(line));
+        cJSON* peer_obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(peer_obj, "id", list[i]->module_id);
+        cJSON_AddStringToObject(peer_obj, "name", list[i]->name);
+        cJSON_AddStringToObject(peer_obj, "capability",
+                                 list[i]->capability[0] ? list[i]->capability : "");
+        cJSON_AddItemToArray(peers_json, peer_obj);
     }
 
     cJSON* root = cJSON_CreateObject();
@@ -1097,14 +1103,14 @@ static const httpd_uri_t s_uris[] = {
 
 static esp_err_t start_softap(void)
 {
-    // Create AP netif
+    // Create AP netif. Wi-Fi was started by espnow_comm_init in
+    // WIFI_MODE_STA — we transition to APSTA below.
     s_ap_netif = esp_netif_create_default_wifi_ap();
     if (s_ap_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create AP netif");
         return ESP_FAIL;
     }
 
-    // Configure AP
     wifi_config_t ap_config = {};
     strcpy((char*)ap_config.ap.ssid, "ESP-LEGO-Setup");
     ap_config.ap.ssid_len = (uint8_t)strlen("ESP-LEGO-Setup");
@@ -1113,6 +1119,15 @@ static esp_err_t start_softap(void)
     ap_config.ap.authmode        = WIFI_AUTH_OPEN;
     ap_config.ap.beacon_interval = 100;
 
+    // Wi-Fi was started by espnow_comm_init in WIFI_MODE_STA.
+    // Transition the running instance to APSTA — this triggers the
+    // AP VIF to start, firing WIFI_EVENT_AP_START.
+    // Because we created the AP netif first (above), the event
+    // handler is already registered and will call esp_netif_action_start
+    // → lwIP netif added + DHCP server started.
+    // This approach works reliably regardless of NVS-persisted config
+    // because set_mode always starts the AP VIF fresh, unlike
+    // set_config which may be a no-op with unchanged config.
     esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) failed: %d", ret);
@@ -1128,11 +1143,6 @@ static esp_err_t start_softap(void)
         s_ap_netif = NULL;
         return ret;
     }
-
-    // Wi-Fi was already started by espnow_comm_init (WIFI_MODE_STA).
-    // esp_wifi_set_mode(WIFI_MODE_APSTA) transitions the running
-    // instance — no esp_wifi_start() needed.
-    (void)ret; // ret already consumed above
 
     ESP_LOGI(TAG, "SoftAP started: ESP-LEGO-Setup (channel %d)",
              CONFIG_SOFTAP_CHANNEL);

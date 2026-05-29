@@ -39,6 +39,10 @@ void      espnow_comm_register_recv_callback(espnow_recv_callback_t cb);
 // Module name — set by sensor before calling espnow_comm_send_announce()
 extern char    g_espnow_module_name[17];
 
+// Module capability descriptor — describes sensor function/data format
+// Set by sensor along with g_espnow_module_name, sent in MSG_ANNOUNCE.
+extern char    g_espnow_module_capability[CONFIG_MAX_CAPABILITY_LEN];
+
 // Suspend/resume RX processing (used by wifi_scan during Wi-Fi scanning)
 void espnow_comm_suspend_rx(void);
 void espnow_comm_resume_rx(void);

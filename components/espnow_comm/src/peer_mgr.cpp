@@ -17,6 +17,7 @@
 
 #include "sdkconfig.h"
 #include "espnow_comm/peer_mgr.h"
+#include "esp_now.h"
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
@@ -65,7 +66,7 @@ void peer_mgr_init(void)
 // ------------------------------------------------------------------
 // Handle announce from sensor — auto-assigns module_id if new MAC
 // ------------------------------------------------------------------
-uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name)
+uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name, const char* capability)
 {
     if (mac == NULL || name == NULL) return 0;
 
@@ -82,12 +83,21 @@ uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name)
     }
 
     if (existing_idx >= 0) {
-        // Found — update name, refresh state
+        // Found — update name, capability, refresh state
         PeerEntry* e = &s_peers[existing_idx];
         size_t nlen = strlen(name);
         if (nlen > 16) nlen = 16;
         memcpy(e->name, name, nlen);
         e->name[nlen] = '\0';
+
+        // Update capability if provided
+        if (capability != NULL) {
+            size_t clen = strlen(capability);
+            if (clen >= sizeof(e->capability)) clen = sizeof(e->capability) - 1;
+            memcpy(e->capability, capability, clen);
+            e->capability[clen] = '\0';
+        }
+
         e->state     = PEER_ACTIVE;
         e->last_seen = xTaskGetTickCount();
         uint8_t id   = e->module_id;
@@ -123,7 +133,16 @@ uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name)
         return 0;
     }
 
-    // 4. Fill entry
+    // 4. Register MAC in ESP-NOW underlying layer to permit unicast messages
+    if (!esp_now_is_peer_exist(mac)) {
+        esp_now_peer_info_t peerInfo = {};
+        peerInfo.channel = 0; // Use current channel
+        peerInfo.encrypt = false;
+        memcpy(peerInfo.peer_addr, mac, 6);
+        esp_now_add_peer(&peerInfo);
+    }
+
+    // 5. Fill entry
     PeerEntry* e = &s_peers[slot];
     memset(e, 0, sizeof(PeerEntry));
     memcpy(e->mac, mac, 6);
@@ -138,6 +157,16 @@ uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name)
     if (nlen > 16) nlen = 16;
     memcpy(e->name, name, nlen);
     e->name[nlen] = '\0';
+
+    // Copy capability descriptor
+    if (capability != NULL) {
+        size_t clen = strlen(capability);
+        if (clen >= sizeof(e->capability)) clen = sizeof(e->capability) - 1;
+        memcpy(e->capability, capability, clen);
+        e->capability[clen] = '\0';
+    } else {
+        e->capability[0] = '\0';
+    }
 
     memset(e->dedup_seq, 0xFF, sizeof(e->dedup_seq));
     e->dedup_count = 0;

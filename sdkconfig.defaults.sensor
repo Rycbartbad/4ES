@@ -2,6 +2,9 @@
 CONFIG_DEVICE_ROLE_SENSOR=y
 # CONFIG_DEVICE_ROLE_MASTER is not set
 
+# Sensor runs on ESP32-C3 (RISC-V), master on ESP32-S3
+CONFIG_IDF_TARGET="esp32c3"
+
 # Sensor firmware doesn't need Web Console
 # CONFIG_WEB_CONSOLE_ENABLED is not set
 

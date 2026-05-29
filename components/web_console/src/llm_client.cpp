@@ -410,10 +410,17 @@ static int build_system_prompt(char* buf, int max_len)
 
     int peer_count = 0;
     PeerEntry** peers = peer_mgr_list(&peer_count);
-    for (int i = 0; i < peer_count && pos < max_len - 80; i++) {
-        pos += snprintf(buf + pos, (size_t)(max_len - pos),
-            "- id=%u, name=%s\n",
-            peers[i]->module_id, peers[i]->name);
+    for (int i = 0; i < peer_count && pos < max_len - 160; i++) {
+        const char* cap = peers[i]->capability;
+        if (cap && cap[0]) {
+            pos += snprintf(buf + pos, (size_t)(max_len - pos),
+                "- id=%u, name=%s, capabilities: %s\n",
+                peers[i]->module_id, peers[i]->name, cap);
+        } else {
+            pos += snprintf(buf + pos, (size_t)(max_len - pos),
+                "- id=%u, name=%s\n",
+                peers[i]->module_id, peers[i]->name);
+        }
     }
     pos += snprintf(buf + pos, (size_t)(max_len - pos), "\n");
 
