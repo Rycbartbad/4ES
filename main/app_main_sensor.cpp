@@ -28,6 +28,8 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
 
 #include "espnow_comm/comm.h"
 #include "espnow_comm/protocol.h"
@@ -53,13 +55,134 @@
 static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 
 // ====================================================================
+// Doorbell Sensor Definition
+// ====================================================================
+
+#define DOORBELL_PIN GPIO_NUM_35
+#define DOORBELL_ACTIVE_LEVEL 1
+#define DOORBELL_DEBOUNCE_SAMPLES 5
+#define DOORBELL_DEBOUNCE_DELAY_MS 5
+
+#define BUZZER_PIN GPIO_NUM_36
+#define BUZZER_LEDC_MODE LEDC_LOW_SPEED_MODE
+#define BUZZER_LEDC_TIMER LEDC_TIMER_1
+#define BUZZER_LEDC_CHANNEL LEDC_CHANNEL_1
+#define BUZZER_LEDC_DUTY_RES LEDC_TIMER_10_BIT
+#define BUZZER_LEDC_DUTY_ON 512
+#define BUZZER_DEFAULT_FREQ_HZ 3000
+
+// ====================================================================
 // Active Sensor Configuration (Set one to 1, others to 0)
 // ====================================================================
+#define USE_SENSOR_DOORBELL  1
 #define USE_SENSOR_DHT11     0
 #define USE_SENSOR_VIBRATION 0
 #define USE_SENSOR_RAINDROP  0
 #define USE_SENSOR_BH1750    0
-#define USE_SENSOR_JW01      1
+#define USE_SENSOR_JW01      0
+
+static void buzzer_init()
+{
+    static bool init_done = false;
+    if (init_done) {
+        return;
+    }
+
+    ledc_timer_config_t timer = {};
+    timer.speed_mode = BUZZER_LEDC_MODE;
+    timer.duty_resolution = BUZZER_LEDC_DUTY_RES;
+    timer.timer_num = BUZZER_LEDC_TIMER;
+    timer.freq_hz = BUZZER_DEFAULT_FREQ_HZ;
+    timer.clk_cfg = LEDC_AUTO_CLK;
+    ESP_ERROR_CHECK(ledc_timer_config(&timer));
+
+    ledc_channel_config_t channel = {};
+    channel.gpio_num = BUZZER_PIN;
+    channel.speed_mode = BUZZER_LEDC_MODE;
+    channel.channel = BUZZER_LEDC_CHANNEL;
+    channel.intr_type = LEDC_INTR_DISABLE;
+    channel.timer_sel = BUZZER_LEDC_TIMER;
+    channel.duty = 0;
+    channel.hpoint = 0;
+    ESP_ERROR_CHECK(ledc_channel_config(&channel));
+    ESP_ERROR_CHECK(ledc_stop(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0));
+
+    init_done = true;
+}
+
+static void buzzer_tone(uint32_t freq_hz, uint32_t duration_ms)
+{
+    buzzer_init();
+    ESP_ERROR_CHECK(ledc_set_freq(BUZZER_LEDC_MODE, BUZZER_LEDC_TIMER, freq_hz));
+    ESP_ERROR_CHECK(ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, BUZZER_LEDC_DUTY_ON));
+    ESP_ERROR_CHECK(ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL));
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    ESP_ERROR_CHECK(ledc_stop(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0));
+}
+
+static void buzzer_play_chime()
+{
+    buzzer_tone(3200, 120);
+    vTaskDelay(pdMS_TO_TICKS(60));
+    buzzer_tone(2400, 180);
+}
+
+static void doorbell_init()
+{
+    static bool init_done = false;
+    if (init_done) {
+        return;
+    }
+
+    gpio_config_t conf = {};
+    conf.pin_bit_mask = (1ULL << DOORBELL_PIN);
+    conf.mode = GPIO_MODE_INPUT;
+    conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    conf.intr_type = GPIO_INTR_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&conf));
+
+    init_done = true;
+}
+
+static bool doorbell_read_pressed()
+{
+    doorbell_init();
+
+    int active_count = 0;
+    for (int i = 0; i < DOORBELL_DEBOUNCE_SAMPLES; i++) {
+        if (gpio_get_level(DOORBELL_PIN) == DOORBELL_ACTIVE_LEVEL) {
+            active_count++;
+        }
+        if (i + 1 < DOORBELL_DEBOUNCE_SAMPLES) {
+            vTaskDelay(pdMS_TO_TICKS(DOORBELL_DEBOUNCE_DELAY_MS));
+        }
+    }
+
+    return active_count >= ((DOORBELL_DEBOUNCE_SAMPLES / 2) + 1);
+}
+
+static void doorbell_log_task(void* arg)
+{
+    (void)arg;
+
+    bool last_pressed = doorbell_read_pressed();
+    printf("Doorbell GPIO35 initial=%d\n", last_pressed ? 1 : 0);
+
+    while (1) {
+        bool pressed = doorbell_read_pressed();
+        if (pressed != last_pressed) {
+            printf("Doorbell %s (GPIO35=%d)\n",
+                   pressed ? "pressed" : "released",
+                   pressed ? 1 : 0);
+            if (pressed) {
+                buzzer_play_chime();
+            }
+            last_pressed = pressed;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 
 // ====================================================================
 // DHT11 Sensor Definition
@@ -269,8 +392,18 @@ static bool jw01_read(double* co2, double* tvoc, double* ch2o) {
 static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                             const uint8_t* data, int len)
 {
-    (void)data;
-    (void)len;
+    (void)msg_type;
+
+    MsgHeader hdr;
+    if (!protocol_parse_header(data, len, &hdr)) {
+        return;
+    }
+
+    const uint8_t* payload = data + MSG_HEADER_SIZE;
+    const int payload_len = len - (int)MSG_HEADER_SIZE;
+    if (hdr.payload_len > payload_len) {
+        return;
+    }
 
     // Ensure peer is added to ESP-NOW so unicast esp_now_send succeeds
     if (!esp_now_is_peer_exist(src_mac)) {
@@ -281,10 +414,22 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         esp_now_add_peer(&peerInfo);
     }
 
-    switch (msg_type) {
+    switch (hdr.msg_type) {
 
     case MSG_DATA_REQ: {
-#if USE_SENSOR_JW01
+#if USE_SENSOR_DOORBELL
+        double values[1] = {doorbell_read_pressed() ? 1.0 : 0.0};
+
+        uint8_t resp_buf[128];
+        size_t  resp_len = 0;
+        protocol_build_data_resp(resp_buf, &resp_len,
+                                  hdr.target_id, hdr.seq_id,
+                                  values, 1);
+
+        if (resp_len > 0) {
+            esp_now_send(src_mac, resp_buf, resp_len);
+        }
+#elif USE_SENSOR_JW01
         static bool init_done = false;
         if (!init_done) {
             jw01_init();
@@ -304,7 +449,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, 3);
 
         if (resp_len > 0) {
@@ -324,7 +469,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, 1);
 
         if (resp_len > 0) {
@@ -344,7 +489,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, 1);
 
         if (resp_len > 0) {
@@ -364,7 +509,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, 1);
 
         if (resp_len > 0) {
@@ -383,7 +528,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, 2);
 
         if (resp_len > 0) {
@@ -409,7 +554,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         uint8_t resp_buf[128];
         size_t  resp_len = 0;
         protocol_build_data_resp(resp_buf, &resp_len,
-                                  0, 0,
+                                  hdr.target_id, hdr.seq_id,
                                   values, SENSOR_ADC_COUNT);
 
         if (resp_len > 0) {
@@ -421,16 +566,16 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
 
     case MSG_CMD: {
         // Simple command handling: payload[0] = pin, payload[1] = value
-        if (len < 2) break;
-        uint8_t pin = data[0];
-        uint8_t val = data[1];
+        if (hdr.payload_len < 2 || payload_len < 2) break;
+        uint8_t pin = payload[0];
+        uint8_t val = payload[1];
         hw_gpio_write(pin, val);
 
         // Send ACK
         {
             uint8_t ack_buf[64];
             size_t ack_len = 0;
-            protocol_build_ack(ack_buf, &ack_len, 0, 0);
+            protocol_build_ack(ack_buf, &ack_len, hdr.target_id, hdr.seq_id);
             if (ack_len > 0) {
                 esp_now_send(src_mac, ack_buf, ack_len);
             }
@@ -462,7 +607,7 @@ static void announce_task(void* arg)
 
 extern "C" void app_main(void)
 {
-    printf("ESP-LEGO V1.0 SENSOR firmware starting...\n");
+    printf("ESP-LEGO V1.0 DOORBELL SENSOR firmware starting...\n");
 
     // ---- Initialize NVS ----
     esp_err_t ret = nvs_flash_init();
@@ -479,8 +624,11 @@ extern "C" void app_main(void)
 
     // ---- Set module name (used in announce) ----
     strncpy(g_espnow_module_name, s_module_name,
-            sizeof(g_espnow_module_name));
+            sizeof(g_espnow_module_name) - 1);
     g_espnow_module_name[sizeof(g_espnow_module_name) - 1] = '\0';
+
+    doorbell_init();
+    buzzer_init();
 
     // ---- Register receive callback ----
     espnow_comm_register_recv_callback(sensor_recv_cb);
@@ -492,8 +640,16 @@ extern "C" void app_main(void)
         printf("ERROR: Failed to create announce task\n");
     }
 
+    tsk = xTaskCreate(doorbell_log_task, "doorbell_log",
+                      2048, NULL, 5, NULL);
+    if (tsk != pdPASS) {
+        printf("ERROR: Failed to create doorbell log task\n");
+    }
+
     printf("Sensor ready — name=%s\n",
            g_espnow_module_name);
+
+    printf("Doorbell gpio=35 active_high=1, buzzer gpio=36 pwm=2-5kHz\n");
 
     // ---- Main loop ----
     while (1) {
