@@ -39,6 +39,8 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 
+#include <cstring>
+
 #include "lcd_touch/lcd_touch.h"
 
 /* ====================================================================
@@ -122,7 +124,7 @@ esp_err_t touch_init(void)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_TOUCH_RST) |
                         (1ULL << PIN_TOUCH_INT),
-        .mode         = GPIO_MODE_INPUT_OUTPUT_OPEN_DRAIN,
+        .mode         = GPIO_MODE_INPUT_OUTPUT_OD,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
@@ -143,8 +145,8 @@ esp_err_t touch_init(void)
         .scl_io_num  = PIN_TOUCH_SCL,
         .clk_source  = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
     };
+    bus_cfg.flags.enable_internal_pullup = true;
     esp_err_t ret = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(ret));
