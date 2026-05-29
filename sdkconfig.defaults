@@ -24,3 +24,11 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # LVGL: keep production builds lean; examples are not used by ESP-LEGO.
 # CONFIG_LV_BUILD_EXAMPLES is not set
+
+# Web console requests 10 HTTPD client sockets; HTTPD uses 3 sockets
+# internally, so lwIP needs at least 13 total sockets.
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# HTTPD handles captive portal redirects and JSON responses on its own task.
+# Keep this aligned with web_console/Kconfig's larger default.
+CONFIG_HTTP_SERVER_STACK_SIZE=10240
