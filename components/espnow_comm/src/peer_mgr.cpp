@@ -607,6 +607,72 @@ PeerEntry** peer_mgr_list(int* count)
     return s_active_list;
 }
 
+int peer_mgr_copy_active(PeerEntry* out, int max_entries)
+{
+    int active_count = 0;
+    int copy_count = 0;
+
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].state != PEER_ACTIVE) continue;
+
+        if (out != NULL && copy_count < max_entries) {
+            memcpy(&out[copy_count], &s_peers[i], sizeof(PeerEntry));
+            copy_count++;
+        }
+        active_count++;
+    }
+    PEER_UNLOCK();
+
+    return active_count;
+}
+
+int peer_mgr_copy_snapshot(PeerEntry* out, int max_entries)
+{
+    int total_count = 0;
+    int copy_count = 0;
+
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+
+        if (out != NULL && copy_count < max_entries) {
+            memcpy(&out[copy_count], &s_peers[i], sizeof(PeerEntry));
+            copy_count++;
+        }
+        total_count++;
+    }
+    PEER_UNLOCK();
+
+    return total_count;
+}
+
+void peer_mgr_update_data_by_mac(const uint8_t* mac, const double* values,
+                                 int value_count)
+{
+    if (mac == NULL || values == NULL || value_count <= 0) return;
+
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (memcmp(s_peers[i].mac, mac, 6) != 0) continue;
+
+        int n = value_count;
+        if (n > PEER_LAST_VALUE_MAX) {
+            n = PEER_LAST_VALUE_MAX;
+        }
+
+        for (int j = 0; j < n; j++) {
+            s_peers[i].last_values[j] = values[j];
+        }
+        s_peers[i].last_value_count = (uint8_t)n;
+        s_peers[i].last_data_tick = xTaskGetTickCount();
+        break;
+    }
+    PEER_UNLOCK();
+}
+
 // ------------------------------------------------------------------
 // Age scan — lock per entry, not whole scan (design.md §4.4)
 // ------------------------------------------------------------------

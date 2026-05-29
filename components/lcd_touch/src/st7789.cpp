@@ -207,8 +207,8 @@ esp_err_t lcd_init(void)
     /* Colour mode: 16-bit RGB565 (0x55 = 65k colours) */
     lcd_write_cmd_param(ST7789_COLMOD, 0x55);
 
-    /* Memory access control: BGR order, default portrait */
-    lcd_write_cmd_param(ST7789_MADCTL, MADCTL_BGR);
+    /* Memory access control: mirror X to match this panel's scan direction. */
+    lcd_write_cmd_param(ST7789_MADCTL, MADCTL_BGR | MADCTL_MX);
 
     /* Porch timing (common values for 240×240) */
     {
@@ -269,8 +269,8 @@ esp_err_t lcd_init(void)
     ESP_LOGI(TAG, "No BL pin - backlight assumed always-on");
 #endif
 
-    /* ---- 6. Clear screen to red (visibility test) ---- */
-    lcd_fill(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, COLOR_RED);
+    /* ---- 6. Clear screen before upper layers draw UI content ---- */
+    lcd_fill(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, COLOR_BLACK);
 
     ESP_LOGI(TAG, "ST7789 init done");
     return ESP_OK;
@@ -474,12 +474,13 @@ void lcd_set_rotation(uint8_t rotation)
 
     switch (rotation & 0x03) {
     case 0:                         /* portrait (default) */
+        madctl |= MADCTL_MX;
         break;
     case 1:                         /* landscape */
         madctl |= MADCTL_MX | MADCTL_MV;
         break;
     case 2:                         /* inverted portrait */
-        madctl |= MADCTL_MX | MADCTL_MY;
+        madctl |= MADCTL_MY;
         break;
     case 3:                         /* inverted landscape */
         madctl |= MADCTL_MV | MADCTL_MY;

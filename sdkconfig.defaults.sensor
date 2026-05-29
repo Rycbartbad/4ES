@@ -8,6 +8,10 @@ CONFIG_IDF_TARGET="esp32c3"
 # Sensor firmware doesn't need Web Console
 # CONFIG_WEB_CONSOLE_ENABLED is not set
 
+# Sensor builds stay on the default 1 MB factory slot.
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+# CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE is not set
+
 # Sensor module name (used in announce packets)
 # Master assigns module_id dynamically upon connection.
 # Override for fixed identity:

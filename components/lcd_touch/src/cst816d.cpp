@@ -74,6 +74,7 @@ static const char* TAG = "cst816d";
 static i2c_master_bus_handle_t   s_i2c_bus   = NULL;
 static i2c_master_dev_handle_t   s_i2c_dev   = NULL;
 static touch_gesture_t           s_last_gesture = TOUCH_GESTURE_NONE;
+static bool                      s_touch_ready = false;
 
 /* ====================================================================
  * Low-level I2C helpers
@@ -112,6 +113,24 @@ static esp_err_t touch_write_reg(uint8_t reg, uint8_t val)
                                pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
 }
 
+static void touch_scan_i2c_bus(void)
+{
+    int found = 0;
+
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        esp_err_t ret = i2c_master_probe(s_i2c_bus, addr,
+                                         pdMS_TO_TICKS(20));
+        if (ret == ESP_OK) {
+            ESP_LOGW(TAG, "I2C device found at 0x%02X", addr);
+            found++;
+        }
+    }
+
+    if (found == 0) {
+        ESP_LOGW(TAG, "I2C scan found no devices on touch bus");
+    }
+}
+
 /* ====================================================================
  * Public API
  * ==================================================================== */
@@ -119,24 +138,35 @@ static esp_err_t touch_write_reg(uint8_t reg, uint8_t val)
 esp_err_t touch_init(void)
 {
     ESP_LOGI(TAG, "CST816D init start");
+    s_touch_ready = false;
 
     /* ---- 1. Configure GPIOs ---- */
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PIN_TOUCH_RST) |
-                        (1ULL << PIN_TOUCH_INT),
-        .mode         = GPIO_MODE_INPUT_OUTPUT_OD,
+    gpio_config_t rst_conf = {
+        .pin_bit_mask = (1ULL << PIN_TOUCH_RST),
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&rst_conf);
+
+    gpio_config_t int_conf = {
+        .pin_bit_mask = (1ULL << PIN_TOUCH_INT),
+        .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
-    gpio_config(&io_conf);
+    gpio_config(&int_conf);
 
     /* ---- 2. Hardware reset sequence ---- */
     /* Hold RESET low for ≥5 ms, then release and wait for the chip to stabilise */
-    gpio_set_level(PIN_TOUCH_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(PIN_TOUCH_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(5));
+    gpio_set_level(PIN_TOUCH_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(PIN_TOUCH_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(120));
 
     /* ---- 3. Initialise I2C bus (I2C_NUM_0) ---- */
     i2c_master_bus_config_t bus_cfg = {
@@ -150,6 +180,17 @@ esp_err_t touch_init(void)
     esp_err_t ret = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = i2c_master_probe(s_i2c_bus, TOUCH_I2C_ADDR,
+                           pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "CST816D probe failed at 0x%02X: %s",
+                 TOUCH_I2C_ADDR, esp_err_to_name(ret));
+        touch_scan_i2c_bus();
+        i2c_del_master_bus(s_i2c_bus);
+        s_i2c_bus = NULL;
         return ret;
     }
 
@@ -187,6 +228,7 @@ esp_err_t touch_init(void)
     gpio_set_direction(PIN_TOUCH_INT, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PIN_TOUCH_INT, GPIO_PULLUP_ONLY);
 
+    s_touch_ready = true;
     ESP_LOGI(TAG, "CST816D init done");
     return ESP_OK;
 }
@@ -201,7 +243,7 @@ esp_err_t touch_read(touch_data_t* out)
 
     memset(out, 0, sizeof(*out));
 
-    if (!s_i2c_dev) {
+    if (!s_touch_ready || !s_i2c_dev) {
         ESP_LOGW(TAG, "Touch not initialised");
         return ESP_ERR_INVALID_STATE;
     }
@@ -268,6 +310,13 @@ esp_err_t touch_read(touch_data_t* out)
 touch_gesture_t touch_get_gesture(void)
 {
     return s_last_gesture;
+}
+
+/* ------------------------------------------------------------------ */
+
+bool touch_is_initialized(void)
+{
+    return s_touch_ready;
 }
 
 /* ------------------------------------------------------------------ */

@@ -38,6 +38,7 @@
 #include "hw_drivers/drivers.h"
 
 #include "lcd_touch/lcd_touch.h"
+#include "ui_lvgl/ui_lvgl.h"
 
 #include "espnow_comm/peer_mgr.h"
 #include "espnow_comm/comm.h"
@@ -150,6 +151,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(espnow_comm_init());
 
     // ---- 2b. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
+    bool lcd_ready = false;
     {
         esp_err_t lcd_ret = lcd_touch_init();
         if (lcd_ret != ESP_OK) {
@@ -157,6 +159,18 @@ extern "C" void app_main(void)
                      esp_err_to_name(lcd_ret));
         } else {
             ESP_LOGI(TAG, "LCD + Touch ready");
+            lcd_ready = true;
+        }
+    }
+
+    // ---- 2c. Initialise onboard LVGL diagnostics UI (non-fatal) ----
+    if (lcd_ready) {
+        esp_err_t ui_ret = ui_lvgl_init();
+        if (ui_ret != ESP_OK) {
+            ESP_LOGW(TAG, "LVGL UI init skipped (%s), continuing",
+                     esp_err_to_name(ui_ret));
+        } else {
+            ESP_LOGI(TAG, "LVGL diagnostics UI ready");
         }
     }
 

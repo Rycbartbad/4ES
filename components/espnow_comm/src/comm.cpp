@@ -488,6 +488,21 @@ void espnow_comm_handle_resp(const uint8_t* src_mac,
 {
     if (src_mac == NULL || data == NULL) return;
 
+    MsgHeader hdr;
+    if (!protocol_parse_header(data, len, &hdr)) {
+        return;
+    }
+
+    double parsed_values[DATA_RESP_MAX_VALUES];
+    int parsed_count = protocol_extract_values(data, len, parsed_values,
+                                               DATA_RESP_MAX_VALUES);
+    if (parsed_count <= 0) {
+        ESP_LOGW(TAG, "response: failed to extract values");
+        return;
+    }
+
+    peer_mgr_update_data_by_mac(src_mac, parsed_values, parsed_count);
+
     COMM_LOCK();
 
     if (!s_resp_pending) {
@@ -503,13 +518,6 @@ void espnow_comm_handle_resp(const uint8_t* src_mac,
         return;
     }
 
-    // Extract and verify seq_id
-    MsgHeader hdr;
-    if (!protocol_parse_header(data, len, &hdr)) {
-        COMM_UNLOCK();
-        return;
-    }
-
     if (hdr.seq_id != s_resp_expected_seq) {
         ESP_LOGW(TAG, "response seq mismatch: expected %u got %u",
                  s_resp_expected_seq, hdr.seq_id);
@@ -517,14 +525,10 @@ void espnow_comm_handle_resp(const uint8_t* src_mac,
         return;
     }
 
-    // Extract values array from DATA_RESP payload
-    int n = protocol_extract_values(data, len, s_resp_values, DATA_RESP_MAX_VALUES);
-    if (n <= 0) {
-        ESP_LOGW(TAG, "response: failed to extract values");
-        COMM_UNLOCK();
-        return;
+    for (int i = 0; i < parsed_count; i++) {
+        s_resp_values[i] = parsed_values[i];
     }
-    s_resp_value_count = n;
+    s_resp_value_count = parsed_count;
 
     // Signal the waiting task
     xSemaphoreGive(s_resp_sem);

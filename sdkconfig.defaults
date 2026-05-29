@@ -16,3 +16,11 @@ CONFIG_IDF_TARGET="esp32s3"
 
 # Serial flasher
 CONFIG_ESPTOOLPY_MONITOR_BAUD_OTHER_VAL=115200
+
+# Default `idf.py build` produces the Master firmware, which needs a
+# larger factory app slot after Web Console + LVGL are enabled.
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# LVGL: keep production builds lean; examples are not used by ESP-LEGO.
+# CONFIG_LV_BUILD_EXAMPLES is not set

@@ -178,8 +178,8 @@ extern "C" {
 /** I2C master controller to use (I2C_NUM_0). */
 #define TOUCH_I2C_PORT  I2C_NUM_0
 
-/** I2C clock rate in Hz (400 kHz fast mode). */
-#define TOUCH_I2C_CLOCK_HZ  400000
+/** I2C clock rate in Hz. 100 kHz is conservative for bring-up wiring. */
+#define TOUCH_I2C_CLOCK_HZ  100000
 
 /** SPI host controller (SPI2_HOST ≡ FSPI). */
 #define LCD_SPI_HOST    SPI2_HOST
@@ -389,6 +389,13 @@ esp_err_t touch_read(touch_data_t* out);
  * @return The last detected gesture (TOUCH_GESTURE_NONE if clear).
  */
 touch_gesture_t touch_get_gesture(void);
+
+/**
+ * @brief  Check whether the CST816D controller was initialised.
+ *
+ * @return true if touch_read() can poll the controller, false otherwise.
+ */
+bool touch_is_initialized(void);
 
 /**
  * @brief  Manually reset the touch controller (hardware reset via RST pin).
