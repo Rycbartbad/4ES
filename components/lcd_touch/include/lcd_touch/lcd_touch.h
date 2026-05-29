@@ -184,8 +184,8 @@ extern "C" {
 /** SPI host controller (SPI2_HOST ≡ FSPI). */
 #define LCD_SPI_HOST    SPI2_HOST
 
-/** SPI clock rate in Hz (40 MHz). */
-#define LCD_SPI_CLOCK_HZ   40000000
+/** SPI clock rate in Hz (10 MHz — lowered for jumper-wire reliability). */
+#define LCD_SPI_CLOCK_HZ   10000000
 
 /* ====================================================================
  * RGB565 Colour Macros

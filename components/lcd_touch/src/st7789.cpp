@@ -72,8 +72,9 @@ static const char* TAG = "st7789";
 #define MADCTL_RGB 0x00   /* RGB colour filter order */
 #define MADCTL_BGR 0x08   /* BGR colour filter order */
 
-/* Used to reduce bus turnover when writing many short transactions */
-#define LCD_SPI_DMA_CHAN  SPI_DMA_DISABLED  /* or SPI_DMA_CH_AUTO on some chips */
+/* Use DMA for large pixel transfers (hardware FIFO is only 64 bytes).
+ * SPI_DMA_CH_AUTO lets the driver pick the best DMA channel. */
+#define LCD_SPI_DMA_CHAN  SPI_DMA_CH_AUTO
 #define LCD_SPI_QUEUE_SIZE  7
 
 /* ====================================================================
@@ -142,11 +143,15 @@ esp_err_t lcd_init(void)
     ESP_LOGI(TAG, "ST7789 init start (240 × 240)");
 
     /* ---- 1. Configure control GPIOs ---- */
+    uint64_t pin_mask = (1ULL << PIN_LCD_DC) | (1ULL << PIN_LCD_CS);
+#if PIN_LCD_RST >= 0
+    pin_mask |= (1ULL << PIN_LCD_RST);
+#endif
+#if PIN_LCD_BL >= 0
+    pin_mask |= (1ULL << PIN_LCD_BL);
+#endif
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PIN_LCD_DC) |
-                        (1ULL << PIN_LCD_RST) |
-                        (1ULL << PIN_LCD_BL) |
-                        (1ULL << PIN_LCD_CS),
+        .pin_bit_mask = pin_mask,
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -170,11 +175,11 @@ esp_err_t lcd_init(void)
     }
 
     spi_device_interface_config_t dev_cfg = {
-        .clock_speed_hz = LCD_SPI_CLOCK_HZ,
         .mode           = 0,                /* SPI mode 0 */
+        .clock_speed_hz = LCD_SPI_CLOCK_HZ,
         .spics_io_num   = PIN_LCD_CS,
-        .queue_size     = LCD_SPI_QUEUE_SIZE,
         .flags          = SPI_DEVICE_HALFDUPLEX,
+        .queue_size     = LCD_SPI_QUEUE_SIZE,
     };
     ret = spi_bus_add_device(LCD_SPI_HOST, &dev_cfg, &s_spi_dev);
     if (ret != ESP_OK) {
@@ -183,15 +188,17 @@ esp_err_t lcd_init(void)
         return ret;
     }
 
-    /* ---- 3. Hardware reset sequence ---- */
+    /* ---- 3. Hardware reset sequence (if RST pin available) ---- */
+#if PIN_LCD_RST >= 0
     gpio_set_level(PIN_LCD_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(PIN_LCD_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(120));
+#endif
 
     /* ---- 4. Initialisation command sequence ---- */
     lcd_write_cmd(ST7789_SWRESET);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(150));     /* longer delay if no hardware RST */
 
     /* Sleep out */
     lcd_write_cmd(ST7789_SLPOUT);
@@ -255,11 +262,15 @@ esp_err_t lcd_init(void)
     lcd_write_cmd(ST7789_DISPON);
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    /* ---- 5. Backlight on ---- */
+    /* ---- 5. Backlight on (if BL pin available) ---- */
+#if PIN_LCD_BL >= 0
     lcd_set_backlight(255);
+#else
+    ESP_LOGI(TAG, "No BL pin - backlight assumed always-on");
+#endif
 
-    /* ---- 6. Clear screen to black ---- */
-    lcd_fill(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, COLOR_BLACK);
+    /* ---- 6. Clear screen to red (visibility test) ---- */
+    lcd_fill(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, COLOR_RED);
 
     ESP_LOGI(TAG, "ST7789 init done");
     return ESP_OK;
@@ -303,9 +314,12 @@ void lcd_set_backlight(uint8_t brightness)
 
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, brightness);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-#else
+#elif PIN_LCD_BL >= 0
     /* Simple on/off (threshold at 50 %) */
     gpio_set_level(PIN_LCD_BL, brightness >= 128);
+#else
+    (void)brightness;
+    /* No BL pin — backlight is always-on */
 #endif
 }
 
@@ -338,23 +352,14 @@ void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 
 void lcd_write_pixels(const uint16_t* colors, uint32_t len)
 {
-    /* ST7789 expects pixel data as consecutive bytes (big endian 16-bit).
-     * Our uint16_t* is in native byte order (little endian on Xtensa),
-     * but the SPI peripheral sends bytes MSB first.  Since we configured
-     * the SPI in half-duplex mode with 8-bit data width, we need to
-     * swap bytes per pixel.  Use a two-byte transaction per pixel, or
-     * memcpy with byte swap.
-     *
-     * Approach: set DC high and transmit raw bytes.  The colour byte
-     * order is: upper byte (MSB), lower byte (LSB) — which is what
-     * the display expects (big-endian pixel order).
-     */
+    /* ST7789 expects big-endian 16-bit pixel data.  ESP32 is little-endian,
+     * so each uint16_t in memory has the MSB at byte offset 1.  We must
+     * swap bytes before transmitting.  Process in small chunks using a
+     * stack buffer to avoid modifying the caller's data. */
 
     gpio_set_level(PIN_LCD_DC, 1);   /* data mode */
 
-    /* For small flushes we can use single transactions; for large areas
-     * we split into multiple transactions to fit the SPI queue depth. */
-    const uint32_t max_pixels_per_xfer = 2048;
+    const uint32_t max_pixels_per_xfer = 512;
     uint32_t remaining = len;
     const uint16_t* src = colors;
 
@@ -363,9 +368,15 @@ void lcd_write_pixels(const uint16_t* colors, uint32_t len)
                              ? max_pixels_per_xfer
                              : remaining;
 
+        /* Byte-swap chunk into big-endian */
+        uint16_t be_buf[512];
+        for (uint32_t i = 0; i < chunk; i++) {
+            be_buf[i] = (src[i] >> 8) | (src[i] << 8);
+        }
+
         spi_transaction_t t = {
             .length    = chunk * 16,   /* total bits */
-            .tx_buffer = src,
+            .tx_buffer = be_buf,
         };
         spi_device_transmit(s_spi_dev, &t);
 
@@ -383,10 +394,15 @@ void lcd_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
 
     lcd_set_window(x0, y0, x1, y1);
 
+    /* ST7789 expects big-endian 16-bit pixel data.
+     * ESP32 (little-endian) stores 0xF800 as bytes 0x00,0xF8.
+     * Swap to 0xF8,0x00 so the display sees the MSB first. */
+    uint16_t be_color = (color >> 8) | (color << 8);
+
     /* Write the same colour repeatedly using a small stack buffer */
     uint16_t buf[256];
     for (uint32_t i = 0; i < 256; i++) {
-        buf[i] = color;
+        buf[i] = be_color;
     }
 
     gpio_set_level(PIN_LCD_DC, 1);
@@ -408,9 +424,11 @@ void lcd_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 {
     lcd_set_window(x, y, x, y);
     gpio_set_level(PIN_LCD_DC, 1);
+    /* Swap to big-endian for the display */
+    uint16_t be_color = (color >> 8) | (color << 8);
     spi_transaction_t t = {
         .length    = 16,
-        .tx_buffer = &color,
+        .tx_buffer = &be_color,
     };
     spi_device_transmit(s_spi_dev, &t);
 }
@@ -427,13 +445,20 @@ void lcd_draw_bitmap(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
 
     uint32_t remaining = pixels;
     const uint16_t* src = data;
-    const uint32_t max_per_xfer = 4096;
+    const uint32_t max_per_xfer = 512;
 
     while (remaining > 0) {
         uint32_t chunk = (remaining > max_per_xfer) ? max_per_xfer : remaining;
+
+        /* Byte-swap chunk into big-endian for the display */
+        uint16_t be_buf[512];
+        for (uint32_t i = 0; i < chunk; i++) {
+            be_buf[i] = (src[i] >> 8) | (src[i] << 8);
+        }
+
         spi_transaction_t t = {
             .length    = chunk * 16,
-            .tx_buffer = src,
+            .tx_buffer = be_buf,
         };
         spi_device_transmit(s_spi_dev, &t);
         src       += chunk;
