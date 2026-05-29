@@ -24,17 +24,25 @@ static void format_values(const PeerEntry* peer, char* out, size_t out_len)
         return;
     }
 
-    if (peer == NULL || peer->last_value_count == 0) {
+    if (peer == NULL) {
+        copy_text(out, out_len, "--");
+        return;
+    }
+
+    double values[UI_SENSOR_VALUE_MAX];
+    int value_count = ui_lvgl_copy_sensor_values(peer->module_id, values,
+                                                 UI_SENSOR_VALUE_MAX);
+    if (value_count <= 0) {
         copy_text(out, out_len, "--");
         return;
     }
 
     size_t used = 0;
     out[0] = '\0';
-    for (uint8_t i = 0; i < peer->last_value_count; i++) {
+    for (int i = 0; i < value_count; i++) {
         int written = snprintf(out + used, out_len - used,
                                (i == 0) ? "%.1f" : ", %.1f",
-                               peer->last_values[i]);
+                               values[i]);
         if (written < 0) {
             out[out_len - 1] = '\0';
             return;
@@ -54,11 +62,10 @@ void ui_peer_view_refresh(UiStatusState* state)
         return;
     }
 
-    PeerEntry peers[UI_SENSOR_CARD_MAX];
-    memset(peers, 0, sizeof(peers));
     memset(state, 0, sizeof(*state));
 
-    int total = peer_mgr_copy_snapshot(peers, UI_SENSOR_CARD_MAX);
+    int total = 0;
+    PeerEntry** peers = peer_mgr_list(&total);
     int shown = total;
     if (shown > UI_SENSOR_CARD_MAX) {
         shown = UI_SENSOR_CARD_MAX;
@@ -67,12 +74,13 @@ void ui_peer_view_refresh(UiStatusState* state)
     state->total_sensor_count = total;
 
     for (int i = 0; i < shown; i++) {
+        const PeerEntry* peer = peers ? peers[i] : NULL;
         UiSensorCard* card = &state->sensors[i];
         card->present = true;
-        card->connected = (peers[i].state == PEER_ACTIVE);
+        card->connected = (peer != NULL && peer->state == PEER_ACTIVE);
         copy_text(card->name, sizeof(card->name),
-                  peers[i].name[0] ? peers[i].name : "sensor");
-        format_values(&peers[i], card->data, sizeof(card->data));
+                  (peer && peer->name[0]) ? peer->name : "sensor");
+        format_values(peer, card->data, sizeof(card->data));
     }
 
     for (int i = shown; i < UI_SENSOR_CARD_MAX; i++) {

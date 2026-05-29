@@ -18,7 +18,6 @@ typedef enum {
 } PeerState;
 
 #define PEER_ID_STR_LEN 22   // "aa:bb:cc:dd:ee:ff:255\0" = 21 + 1
-#define PEER_LAST_VALUE_MAX 4
 
 #ifndef CONFIG_MAX_CAPABILITY_LEN
 #define CONFIG_MAX_CAPABILITY_LEN 128
@@ -35,10 +34,6 @@ typedef struct {
 
     // Composite peer ID "aa:bb:cc:dd:ee:ff:module_id\0"
     char peer_id[PEER_ID_STR_LEN];
-
-    double last_values[PEER_LAST_VALUE_MAX];
-    uint8_t last_value_count;
-    TickType_t last_data_tick;
 
     // Dedup sliding window — design.md §5.1
     uint8_t  dedup_seq[8];
@@ -65,11 +60,6 @@ PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id);
 int         peer_mgr_active_count(void);
 int         peer_mgr_total_count(void);
 PeerEntry** peer_mgr_list(int* count);
-int         peer_mgr_copy_active(PeerEntry* out, int max_entries);
-int         peer_mgr_copy_snapshot(PeerEntry* out, int max_entries);
-void        peer_mgr_update_data_by_mac(const uint8_t* mac,
-                                        const double* values,
-                                        int value_count);
 
 void peer_mgr_age_scan(TickType_t now);
 void peer_mgr_set_pending(PeerEntry* entry);

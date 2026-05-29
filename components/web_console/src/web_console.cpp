@@ -1159,7 +1159,7 @@ static esp_err_t start_http_server(void)
     config.server_port    = 80;
     config.stack_size     = CONFIG_HTTP_SERVER_STACK_SIZE;
     config.max_uri_handlers = 16;
-    config.max_open_sockets = 7;
+    config.max_open_sockets = 10;
     config.lru_purge_enable = true;
 
     esp_err_t ret = httpd_start(&s_server, &config);

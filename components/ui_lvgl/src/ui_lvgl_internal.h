@@ -5,8 +5,10 @@
 #include "sdkconfig.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define UI_SENSOR_CARD_MAX 4
+#define UI_SENSOR_VALUE_MAX 4
 #define UI_SENSOR_NAME_LEN 17
 #define UI_SENSOR_DATA_LEN 48
 
@@ -25,5 +27,7 @@ typedef struct {
 void ui_screen_diag_create(UiStatusState* state);
 void ui_screen_diag_update(const UiStatusState* state);
 void ui_peer_view_refresh(UiStatusState* state);
+int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
+                               int max_values);
 
 #endif /* UI_LVGL_INTERNAL_H */

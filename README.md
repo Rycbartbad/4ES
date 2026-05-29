@@ -11,9 +11,7 @@
 
 ```powershell
 # 初始化 ESP-IDF 环境
-$env:IDF_TOOLS_PATH='D:\ESPIDF\IDF_5_1_2\TOOLS'
-$env:IDF_PYTHON_ENV_PATH='D:\ESPIDF\IDF_5_1_2\TOOLS\python_env\idf5.2_py3.11_env'
-& 'C:\Users\Fancy\esp\v5.2.6\esp-idf\export.ps1'
+& 'd:\IDF_v5.2.6\v5.2.6\esp-idf\export.ps1'
 
 # 设置目标芯片
 idf.py set-target esp32s3
@@ -43,16 +41,16 @@ idf.py menuconfig
 ### PowerShell 命令行
 
 ```powershell
-.\export_idf.ps1
+& 'd:\IDF_v5.2.6\v5.2.6\esp-idf\export.ps1'
 
 # === 编译 ===
-.\build_master.bat
+idf.py build
 
 # === 烧录（COM3 替换为实际串口号）===
-.\build_master.bat flash COM3
+idf.py -p COM3 flash
 
 # === 查看串口输出 ===
-.\build_master.bat monitor COM3
+idf.py -p COM3 monitor
 ```
 
 `Ctrl+]` 退出 monitor。
@@ -61,16 +59,17 @@ idf.py menuconfig
 
 ```powershell
 # 板子 A — Master（sdkconfig 默认即 Master）
-.\build_master.bat
-.\build_master.bat flash COM3
+idf.py build
+idf.py -p COM3 flash
 
-# 板子 B — Sensor（独立 build/sensor 配置，不需要反复 menuconfig）
-.\build_sensor.bat
-.\build_sensor.bat flash COM4
+# 板子 B — Sensor（切换角色后编译烧录）
+idf.py menuconfig          # Device Role → Sensor → 保存
+idf.py build
+idf.py -p COM4 flash
 
 # 分别打开 Monitor 观察 ESP-NOW 通信
-.\build_master.bat monitor COM3     # Master 端
-.\build_sensor.bat monitor COM4     # Sensor 端（另开终端）
+idf.py -p COM3 monitor     # Master 端
+idf.py -p COM4 monitor     # Sensor 端（另开终端）
 ```
 
 ### 保留两套配置（避免反复 menuconfig）

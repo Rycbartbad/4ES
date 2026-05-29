@@ -1,20 +1,17 @@
 {
-  "idf.currentSetup": "C:\\Users\\Fancy\\esp\\v5.2.6\\esp-idf",
-  "idf.toolsPath": "D:\\ESPIDF\\IDF_5_1_2\\TOOLS",
+  "idf.currentSetup": "d:\\IDF_v5.2.6\\v5.2.6\\esp-idf",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "COM20",
+  "idf.portWin": "COM6",
   "idf.customExtraVars": {
-    "IDF_TARGET": "esp32s3",
-    "IDF_TOOLS_PATH": "D:\\ESPIDF\\IDF_5_1_2\\TOOLS",
-    "IDF_PYTHON_ENV_PATH": "D:\\ESPIDF\\IDF_5_1_2\\TOOLS\\python_env\\idf5.2_py3.11_env"
+    "IDF_TARGET": "esp32s3"
   },
-  "clangd.path": "D:\\ESPIDF\\IDF_5_1_2\\TOOLS\\tools\\esp-clang\\16.0.1-fe4f10a809\\esp-clang\\bin\\clangd.exe",
+  "clangd.path": "d:\\IDF_v5.2.6\\TOOLS_PATH\\tools\\esp-clang\\16.0.1-fe4f10a809\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=e:\\4ES\\4ES\\build"
+    "--compile-commands-dir=d:\\Esp lego\\build"
   ],
   "idf.flashType": "UART"
 }

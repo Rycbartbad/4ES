@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 
@@ -31,6 +32,16 @@ static bool s_running = false;
 static bool s_started = false;
 
 static UiStatusState s_status = {};
+
+typedef struct {
+    bool valid;
+    uint8_t module_id;
+    double values[UI_SENSOR_VALUE_MAX];
+    int value_count;
+} UiSensorValues;
+
+static UiSensorValues s_sensor_values[UI_SENSOR_CARD_MAX];
+static portMUX_TYPE s_sensor_values_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void lcd_write_lvgl_colors(const lv_color_t* colors, uint32_t count)
 {
@@ -96,6 +107,68 @@ static void lv_tick_cb(void* arg)
     lv_tick_inc(1);
 }
 
+static void store_sensor_values(uint8_t module_id, const double* values,
+                                int value_count)
+{
+    if (value_count < 0) {
+        value_count = 0;
+    }
+    if (value_count > UI_SENSOR_VALUE_MAX) {
+        value_count = UI_SENSOR_VALUE_MAX;
+    }
+
+    taskENTER_CRITICAL(&s_sensor_values_lock);
+    int slot = -1;
+    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+        if (s_sensor_values[i].valid &&
+            s_sensor_values[i].module_id == module_id) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && !s_sensor_values[i].valid) {
+            slot = i;
+        }
+    }
+
+    if (slot >= 0) {
+        s_sensor_values[slot].valid = true;
+        s_sensor_values[slot].module_id = module_id;
+        s_sensor_values[slot].value_count = value_count;
+        for (int i = 0; i < value_count; i++) {
+            s_sensor_values[slot].values[i] = values[i];
+        }
+    }
+    taskEXIT_CRITICAL(&s_sensor_values_lock);
+}
+
+int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
+                               int max_values)
+{
+    if (out_values == NULL || max_values <= 0) {
+        return 0;
+    }
+
+    int copied = 0;
+    taskENTER_CRITICAL(&s_sensor_values_lock);
+    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+        if (!s_sensor_values[i].valid ||
+            s_sensor_values[i].module_id != module_id) {
+            continue;
+        }
+
+        copied = s_sensor_values[i].value_count;
+        if (copied > max_values) {
+            copied = max_values;
+        }
+        for (int j = 0; j < copied; j++) {
+            out_values[j] = s_sensor_values[i].values[j];
+        }
+        break;
+    }
+    taskEXIT_CRITICAL(&s_sensor_values_lock);
+    return copied;
+}
+
 static void ui_task(void* arg)
 {
     (void)arg;
@@ -125,16 +198,21 @@ static void sensor_poll_task(void* arg)
     (void)arg;
 
     while (1) {
-        PeerEntry peers[UI_SENSOR_CARD_MAX];
-        int count = peer_mgr_copy_active(peers, UI_SENSOR_CARD_MAX);
+        int count = 0;
+        PeerEntry** peers = peer_mgr_list(&count);
         if (count > UI_SENSOR_CARD_MAX) {
             count = UI_SENSOR_CARD_MAX;
         }
 
         for (int i = 0; i < count; i++) {
-            double values[PEER_LAST_VALUE_MAX];
-            espnow_comm_request_read(peers[i].module_id, values,
-                                     PEER_LAST_VALUE_MAX);
+            if (peers == NULL || peers[i] == NULL) {
+                continue;
+            }
+            const uint8_t module_id = peers[i]->module_id;
+            double values[UI_SENSOR_VALUE_MAX];
+            int value_count = espnow_comm_request_read(module_id, values,
+                                                       UI_SENSOR_VALUE_MAX);
+            store_sensor_values(module_id, values, value_count);
             vTaskDelay(pdMS_TO_TICKS(20));
         }
 

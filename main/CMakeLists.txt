@@ -1,7 +1,7 @@
 # Conditional source selection based on device role
 if(CONFIG_DEVICE_ROLE_SENSOR)
     set(MAIN_SRCS "app_main_sensor.cpp")
-    set(MAIN_REQUIRES espnow_comm hw_drivers nvs_flash esp_wifi)
+    set(MAIN_REQUIRES espnow_comm hw_drivers nvs_flash)
 else()
     set(MAIN_SRCS "app_main.cpp")
     set(MAIN_REQUIRES interpreter espnow_comm hw_drivers script_io web_console
