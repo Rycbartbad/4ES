@@ -220,7 +220,20 @@ int peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name)
         return -1;
     }
 
-    // 3. Fill entry
+    // 3. Register MAC in ESP-NOW underlying layer for unicast send
+    if (!esp_now_is_peer_exist(mac)) {
+        esp_now_peer_info_t peerInfo = {};
+        peerInfo.channel = 0; // Use current channel
+        peerInfo.encrypt = false;
+        memcpy(peerInfo.peer_addr, mac, 6);
+        esp_err_t add_ret = esp_now_add_peer(&peerInfo);
+        if (add_ret != ESP_OK && add_ret != ESP_ERR_ESPNOW_EXIST) {
+            ESP_LOGW(TAG, "esp_now_add_peer failed for %02x:%02x:%02x:%02x:%02x:%02x: %d",
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], add_ret);
+        }
+    }
+
+    // 4. Fill entry
     PeerEntry* e = &s_peers[slot];
     memset(e, 0, sizeof(PeerEntry));
     memcpy(e->mac, mac, 6);

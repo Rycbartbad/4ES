@@ -34,6 +34,8 @@
 
 #include "hw_drivers/drivers.h"
 
+#include "esp_random.h"
+
 // ====================================================================
 // Configuration defaults (when sdkconfig.h not yet fully configured)
 // ====================================================================
@@ -463,7 +465,14 @@ static void announce_task(void* arg)
     (void)arg;
     while (1) {
         espnow_comm_send_announce();
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_ANNOUNCE_INTERVAL_MS));
+
+        // Apply random jitter to avoid collision when multiple sensors
+        // power on simultaneously (design.md §4.3).
+        int jitter = ((int)esp_random() % (CONFIG_ANNOUNCE_JITTER_MS * 2))
+                     - CONFIG_ANNOUNCE_JITTER_MS;
+        int delay_ms = CONFIG_ANNOUNCE_INTERVAL_MS + jitter;
+        if (delay_ms < 100) delay_ms = 100;  // minimum 100ms guard
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 

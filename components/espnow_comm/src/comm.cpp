@@ -149,6 +149,11 @@ esp_err_t espnow_comm_init(void)
         return ret;
     }
 
+    // ESP-NOW requires modem sleep disabled — otherwise broadcast
+    // announces and other ESP-NOW packets are missed while the STA
+    // interface is idle (not connected to any AP).
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     // Set channel — prefer CONFIG_SOFTAP_CHANNEL if available
 #if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
     uint8_t channel = CONFIG_SOFTAP_CHANNEL;
@@ -205,6 +210,11 @@ esp_err_t espnow_comm_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    // ---- Initialize peer manager BEFORE creating rx_task ----
+    // MUST be done first: rx_task (prio 5) can preempt app_main and call
+    // peer_mgr_handle_announce() which needs s_peer_mutex to exist.
+    peer_mgr_init();
+
     // ---- Create RX processing task ----
     BaseType_t task_ok = xTaskCreate(rx_task, "espnow_rx", 4096, NULL, 5, &s_rx_task_handle);
     if (task_ok != pdPASS) {
@@ -217,9 +227,6 @@ esp_err_t espnow_comm_init(void)
         s_comm_mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
-
-    // ---- Initialize peer manager (must be done before any age_scan) ----
-    peer_mgr_init();
 
     ESP_LOGI(TAG, "ESP-NOW comm initialized (channel %d)", channel);
     return ESP_OK;
@@ -316,6 +323,10 @@ static void espnow_recv_cb(const esp_now_recv_info_t* info,
 // ----------------------------------------------------------------
 // RX task  — processes one packet per iteration
 // ----------------------------------------------------------------
+// Diagnostic counters (rate-limited logs for debugging communication)
+static int s_rx_packet_count  = 0;
+static int s_ann_rx_count     = 0;
+
 static void rx_task(void* arg)
 {
     (void)arg;
@@ -325,6 +336,11 @@ static void rx_task(void* arg)
         if (rx_process_one() < 0) {
             // Queue returned empty (shouldn't happen with portMAX_DELAY)
             taskYIELD();
+        }
+        s_rx_packet_count++;
+        if (s_rx_packet_count % 20 == 0) {
+            ESP_LOGI(TAG, "rx: %d packets received (%d announces)",
+                     s_rx_packet_count, s_ann_rx_count);
         }
     }
 }
@@ -349,7 +365,7 @@ static int rx_process_one(void)
 
     case MSG_ANNOUNCE: {
 #if CONFIG_DEVICE_ROLE_MASTER
-        // Minimum: hdr(5) + name(16) = 21 bytes
+        // Minimum: hdr(7) + name(16) = 23 bytes
         if (item.len < (int)(MSG_HEADER_SIZE + 16)) break;
         char ann_name[32];
         char ann_cap[CONFIG_MAX_CAPABILITY_LEN];
@@ -357,6 +373,7 @@ static int rx_process_one(void)
                                  ann_name, sizeof(ann_name),
                                  ann_cap, sizeof(ann_cap));
         peer_mgr_handle_announce(item.src_mac, ann_name, ann_cap);
+        s_ann_rx_count++;
 #endif
         break;
     }
@@ -390,6 +407,8 @@ static int rx_process_one(void)
 // ----------------------------------------------------------------
 // Send announce (sensor → broadcast)
 // ----------------------------------------------------------------
+static int s_announce_sent_count = 0;
+
 void espnow_comm_send_announce(void)
 {
     uint8_t buf[250];
@@ -401,6 +420,14 @@ void espnow_comm_send_announce(void)
     esp_err_t ret = esp_now_send(s_broadcast_mac, buf, len);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "announce send failed: %d", ret);
+    } else {
+        s_announce_sent_count++;
+        // Log periodically (every 10 announces ≈ 30s) to confirm sensor is broadcasting
+        if (s_announce_sent_count % 10 == 0) {
+            ESP_LOGI(TAG, "announce sent x%d (name=%s, cap=%s)",
+                     s_announce_sent_count, g_espnow_module_name,
+                     g_espnow_module_capability);
+        }
     }
 }
 
