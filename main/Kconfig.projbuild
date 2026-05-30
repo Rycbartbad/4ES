@@ -25,4 +25,32 @@ config SENSOR_MODULE_NAME
         Master uses this to present module info in list_peers().
         Example: "kitchen_temp", "living_light", "garden_moisture"
 
+config DOORBELL_PIN
+    int "Doorbell input GPIO"
+    default 35 if IDF_TARGET_ESP32S3
+    default 4 if IDF_TARGET_ESP32C3
+    range 0 48
+    depends on DEVICE_ROLE_SENSOR
+    help
+        GPIO used as the doorbell input. ESP32-C3 builds cannot use the
+        ESP32-S3-only GPIO35 default, so they default to GPIO4.
+
+config DOORBELL_ACTIVE_LEVEL
+    int "Doorbell active level"
+    default 1
+    range 0 1
+    depends on DEVICE_ROLE_SENSOR
+    help
+        Logic level treated as pressed.
+
+config BUZZER_PIN
+    int "Doorbell buzzer GPIO"
+    default 36 if IDF_TARGET_ESP32S3
+    default 5 if IDF_TARGET_ESP32C3
+    range 0 48
+    depends on DEVICE_ROLE_SENSOR
+    help
+        GPIO used for the passive buzzer PWM output. ESP32-C3 builds
+        default to GPIO5.
+
 endmenu

@@ -68,12 +68,12 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 // Doorbell Sensor Definition
 // ====================================================================
 
-#define DOORBELL_PIN GPIO_NUM_35
-#define DOORBELL_ACTIVE_LEVEL 1
+#define DOORBELL_PIN ((gpio_num_t)CONFIG_DOORBELL_PIN)
+#define DOORBELL_ACTIVE_LEVEL CONFIG_DOORBELL_ACTIVE_LEVEL
 #define DOORBELL_DEBOUNCE_SAMPLES 5
 #define DOORBELL_DEBOUNCE_DELAY_MS 5
 
-#define BUZZER_PIN GPIO_NUM_36
+#define BUZZER_PIN ((gpio_num_t)CONFIG_BUZZER_PIN)
 #define BUZZER_LEDC_MODE LEDC_LOW_SPEED_MODE
 #define BUZZER_LEDC_TIMER LEDC_TIMER_1
 #define BUZZER_LEDC_CHANNEL LEDC_CHANNEL_1
@@ -177,13 +177,15 @@ static void doorbell_log_task(void* arg)
     (void)arg;
 
     bool last_pressed = doorbell_read_pressed();
-    printf("Doorbell GPIO35 initial=%d\n", last_pressed ? 1 : 0);
+    printf("Doorbell GPIO%d initial=%d\n",
+           CONFIG_DOORBELL_PIN, last_pressed ? 1 : 0);
 
     while (1) {
         bool pressed = doorbell_read_pressed();
         if (pressed != last_pressed) {
-            printf("Doorbell %s (GPIO35=%d)\n",
+            printf("Doorbell %s (GPIO%d=%d)\n",
                    pressed ? "pressed" : "released",
+                   CONFIG_DOORBELL_PIN,
                    pressed ? 1 : 0);
             if (pressed) {
                 buzzer_play_chime();
@@ -678,7 +680,9 @@ extern "C" void app_main(void)
     printf("Sensor ready — name=%s\n",
            g_espnow_module_name);
 
-    printf("Doorbell gpio=35 active_high=1, buzzer gpio=36 pwm=2-5kHz\n");
+    printf("Doorbell gpio=%d active_level=%d, buzzer gpio=%d pwm=2-5kHz\n",
+           CONFIG_DOORBELL_PIN, CONFIG_DOORBELL_ACTIVE_LEVEL,
+           CONFIG_BUZZER_PIN);
 
     // ---- Main loop ----
     while (1) {

@@ -6,6 +6,9 @@ param(
     [string]$BuildDir = "build\sensor",
     [string]$IDFPath = "",
 
+    [ValidateSet("esp32s3", "esp32c3")]
+    [string]$Target = "esp32s3",
+
     [ValidateSet("default_reset", "usb_reset", "no_reset", "no_reset_no_sync")]
     [string]$Before = "default_reset"
 )
@@ -95,12 +98,13 @@ function Ensure-Target {
     $sdkconfigPath = Join-Path $ProjectDir $BuildDir
     $sdkconfigPath = Join-Path $sdkconfigPath "sdkconfig"
 
+    $targetPattern = '^CONFIG_IDF_TARGET="' + [Regex]::Escape($Target) + '"$'
     if ((Test-Path $sdkconfigPath) -and
-        (Select-String -Path $sdkconfigPath -Pattern '^CONFIG_IDF_TARGET="esp32s3"$' -Quiet)) {
+        (Select-String -Path $sdkconfigPath -Pattern $targetPattern -Quiet)) {
         return
     }
 
-    Invoke-Idf ($commonArgs + @("set-target", "esp32s3"))
+    Invoke-Idf ($commonArgs + @("set-target", $Target))
 }
 
 if ($Action -eq "ports") {
@@ -122,18 +126,23 @@ if (($env:IDF_PATH -eq $script:ResolvedIDFPath) -and
     }
 }
 
+$defaults = "sdkconfig.defaults;sdkconfig.defaults.sensor"
+if ($Target -eq "esp32c3") {
+    $defaults = "sdkconfig.defaults.sensor;sdkconfig.defaults.sensor.c3"
+}
+
 $commonArgs = @(
     "-B", $BuildDir,
     "-DSDKCONFIG=$BuildDir\sdkconfig",
-    "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.sensor"
+    "-DSDKCONFIG_DEFAULTS=$defaults"
 )
 
 switch ($Action) {
     "probe" {
-        Invoke-Esptool (@("--chip", "esp32s3", "-p", $Port, "-b", "115200", "--before", $Before, "--after", "hard_reset", "chip_id"))
+        Invoke-Esptool (@("--chip", $Target, "-p", $Port, "-b", "115200", "--before", $Before, "--after", "hard_reset", "chip_id"))
     }
     "set-target" {
-        Invoke-Idf ($commonArgs + @("set-target", "esp32s3"))
+        Invoke-Idf ($commonArgs + @("set-target", $Target))
     }
     "build" {
         Ensure-Target
