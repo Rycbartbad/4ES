@@ -6,7 +6,7 @@
  * ESP-LEGO V1.0 — Web Console: LLM HTTP client.
  *
  * Implements:
- *   - WiFi mode switch: SoftAP → STA → LLM call → SoftAP (§16.5)
+ *   - WiFi mode switch: SoftAP → STA → LLM call → ESP-NOW channel (§16.5)
  *   - System prompt construction with BNF + device list + builtins
  *   - HTTP POST to OpenAI-compatible API
  *   - Response parsing with cJSON
@@ -115,6 +115,72 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 bool wifi_sta_is_connected(void)
 {
     return s_sta_connected;
+}
+
+bool llm_client_uses_local_proxy(const char* llm_url)
+{
+    if (llm_url == NULL || strncmp(llm_url, "http://", 7) != 0) {
+        return false;
+    }
+
+    const char* host = llm_url + 7;
+    const char* end = host;
+    while (*end && *end != ':' && *end != '/' && *end != '?' && *end != '#') {
+        end++;
+    }
+
+    const char softap_prefix[] = "192.168.4.";
+    const size_t prefix_len = sizeof(softap_prefix) - 1;
+    return (size_t)(end - host) > prefix_len &&
+           strncmp(host, softap_prefix, prefix_len) == 0;
+}
+
+static void set_softap_default_netif(void)
+{
+    esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif) {
+        esp_netif_set_default_netif(ap_netif);
+    } else {
+        ESP_LOGW(TAG, "SoftAP netif handle unavailable");
+    }
+}
+
+static void restore_espnow_channel(void)
+{
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+    const uint8_t channel = CONFIG_SOFTAP_CHANNEL;
+#else
+    const uint8_t channel = 1;
+#endif
+
+    esp_err_t ret = esp_wifi_disconnect();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_LOGW(TAG, "STA disconnect before ESP-NOW restore failed: %d", ret);
+    }
+    s_sta_connected = false;
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "restore APSTA mode failed: %d", ret);
+    }
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "restore ESP-NOW channel %u failed: %d", channel, ret);
+    } else {
+        ESP_LOGI(TAG, "restored ESP-NOW channel %u after LLM call", channel);
+    }
+}
+
+static void finish_llm_network(bool local_proxy_mode)
+{
+    if (local_proxy_mode) {
+        set_softap_default_netif();
+        return;
+    }
+    restore_espnow_channel();
 }
 
 // ====================================================================
@@ -403,7 +469,32 @@ static int build_system_prompt(char* buf, int max_len)
         "- remote_read_min(ids)->num    read multiple remotes, return min value\n"
         "- read_sensor(pin) -> number   read LOCAL analog sensor (ADC pin), returns 0-4095\n"
         "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
-        "- mic_level() -> number        local INMP441 microphone level, 0-100\n\n");
+        "- mic_level() -> number        local INMP441 microphone level, 0-100\n"
+        "- buzzer_beep(id,count)->num   make remote buzzer beep count times; id can be number or peer name\n"
+        "- buzzer_note(id,note,dur)->num play one remote buzzer note; note 0=C4, 12=C5, 19=G5, 24=C6, 36=rest; dur in ms\n"
+        "- buzzer_song(id,song)->num    play preset remote buzzer song: 0=twinkle, 1=birthday, 2=jingle\n"
+        "- servo_write(id,angle)->num   set remote servo angle, angle is 0-180 degrees\n"
+        "- servo_sweep(id,from,to,step,delay)->num sweep remote servo; delay is ms between steps\n\n"
+        "Actuator intent rules:\n"
+        "- If the user asks a buzzer, doorbell, speaker, or beeper to beep, ring, buzz, sound, or chime, use buzzer_* functions only.\n"
+        "- Do NOT use remote_read() for buzzer/doorbell/servo actuator requests.\n"
+        "- If the user asks a servo to turn, rotate, move, or set an angle, use servo_write() or servo_sweep().\n"
+        "- For combined actuator requests, keep every requested actuator action. Do not drop buzzer actions when the prompt also mentions servo.\n"
+        "- For repeated timed actions, emit an explicit sequence using sleep(ms); the script runtime is sequential, not concurrent.\n"
+        "- If the user gives a finite servo angle sequence, do not wrap it in while unless they explicitly ask to repeat or loop.\n"
+        "- Chinese '蜂鸣器每隔一秒叫一声' means add buzzer_beep(...,1) at t=0 and then every 1000ms during the finite action sequence.\n"
+        "- Prefer peer names such as \"servo\" and \"doorbell\" for combined actuator scripts when those names are listed online.\n"
+        "- If only one online peer is listed, use id=1 for buzzer or servo requests.\n"
+        "- For 'make the buzzer beep twice', '蜂鸣器叫两声', or 'doorbell ring twice', output exactly: buzzer_beep(1,2);\n\n"
+        "Buzzer examples:\n"
+        "- User asks 'make the buzzer beep twice' or '蜂鸣器叫两声': buzzer_beep(1,2);\n"
+        "- If a listed online device has Buzzer capability, use that device id/name.\n"
+        "- Do not use raw hex command IDs like 0x0013; the script language only accepts decimal numbers.\n\n"
+        "Servo examples:\n"
+        "- User asks 'turn the servo to 90 degrees': servo_write(1,90);\n"
+        "- User asks 'sweep the servo': servo_sweep(1,0,180,15,200);\n"
+        "- User asks 'move servo 90,75,105,90 every 500ms and beep every second': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n"
+        "- User asks '让 servo 舵机先转到 90 度，然后转到 75 度，再转到 105 度，最后回到 90 度，每一步间隔 500 毫秒。同时让蜂鸣器每隔一秒叫一声': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n\n");
 
     // Online devices
     pos += snprintf(buf + pos, (size_t)(max_len - pos),
@@ -489,7 +580,7 @@ static void extract_script_from_response(const char* response, char* script_out,
 // 2. Ensure STA is connected (connect if not)
 // 3. POST to LLM API (connection is reused)
 // 4. Parse response, extract script
-// 5. Leave STA UP — stays connected for next request
+// 5. Disconnect STA and restore ESP-NOW channel before script injection
 //
 // Returns 0 on success, -1 on error.
 // ====================================================================
@@ -504,7 +595,21 @@ int llm_client_call(const char* ssid, const char* pass,
         return -1;
     }
 
-    // ---- 1. Ensure STA is connected ----
+    const bool local_proxy_mode = llm_client_uses_local_proxy(llm_url);
+
+    // ---- 1. Ensure the right network path is active ----
+    if (local_proxy_mode) {
+        ESP_LOGI(TAG, "Using local LLM proxy on SoftAP subnet; STA stays disconnected");
+        esp_err_t disconnect_ret = esp_wifi_disconnect();
+        if (disconnect_ret != ESP_OK && disconnect_ret != ESP_ERR_WIFI_NOT_CONNECT) {
+            ESP_LOGW(TAG, "STA disconnect before local proxy call failed: %d", disconnect_ret);
+        }
+        s_sta_connected = false;
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        set_softap_default_netif();
+    } else {
+    // Ensure STA is connected.
     // Probe the real driver state — this catches auto-reconnects that
     // happened outside our code (e.g. after a temporary signal drop).
     refresh_sta_state();
@@ -513,6 +618,7 @@ int llm_client_call(const char* ssid, const char* pass,
         ESP_LOGI(TAG, "STA not connected — connecting to %s", ssid);
         esp_wifi_set_mode(WIFI_MODE_APSTA);
         if (do_sta_connect(ssid, pass, 15000) != ESP_OK) {
+            finish_llm_network(local_proxy_mode);
             return -1;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -537,21 +643,28 @@ int llm_client_call(const char* ssid, const char* pass,
             ESP_LOGW(TAG, "STA netif handle unavailable");
         }
     }
+    }
 
     // ---- 2. Build system prompt ----
     // Heap-allocate a generous buffer (design.md's "no dynamic allocation"
     // rule does not apply here — the prompt contains BNF + builtins + device
     // list which can grow, and heap is already used extensively elsewhere).
-    char* sys_prompt = (char*)malloc(4096);
+    const int sys_prompt_len = 6144;
+    char* sys_prompt = (char*)malloc(sys_prompt_len);
     if (sys_prompt == NULL) {
         ESP_LOGE(TAG, "Failed to allocate system prompt buffer");
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
-    build_system_prompt(sys_prompt, 4096);
+    build_system_prompt(sys_prompt, sys_prompt_len);
 
     // ---- 3. Build HTTP JSON body ----
     cJSON* root = cJSON_CreateObject();
-    if (root == NULL) return -1;
+    if (root == NULL) {
+        free(sys_prompt);
+        finish_llm_network(local_proxy_mode);
+        return -1;
+    }
 
     cJSON_AddStringToObject(root, "model", llm_model);
 
@@ -574,10 +687,17 @@ int llm_client_call(const char* ssid, const char* pass,
 
     cJSON_AddNumberToObject(root, "temperature", 0);
     cJSON_AddNumberToObject(root, "max_tokens", 512);
+    if (strstr(llm_model, "deepseek-v4") != NULL) {
+        cJSON* thinking = cJSON_AddObjectToObject(root, "thinking");
+        if (thinking) {
+            cJSON_AddStringToObject(thinking, "type", "disabled");
+        }
+    }
 
     char* json_body = cJSON_PrintUnformatted(root);
     if (json_body == NULL) {
         cJSON_Delete(root);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
     cJSON_Delete(root);
@@ -599,7 +719,11 @@ int llm_client_call(const char* ssid, const char* pass,
         snprintf(full_url, sizeof(full_url), "%s/chat/completions", llm_url);
     }
 
-    // ---- 4. HTTP POST (STA already connected) ----
+    // ---- 4. HTTP POST ----
+    if (local_proxy_mode) {
+        set_softap_default_netif();
+    } else {
+    // HTTP POST over STA.
     // Log current DNS (diagnostic only — DNS comes from GOT_IP handler via DHCP).
     ESP_LOGI(TAG, "STA DNS: " IPSTR,
              IP2STR(&dns_getserver(0)->u_addr.ip4));
@@ -632,16 +756,26 @@ int llm_client_call(const char* ssid, const char* pass,
     hostname_buf[hostname_len] = '\0';
     ESP_LOGI(TAG, "Probing DNS for: %s", hostname_buf);
     probe_dns(hostname_buf);
+    }
 
-    char response[4096];
+    char* response = (char*)malloc(4096);
+    if (response == NULL) {
+        free(json_body);
+        ESP_LOGE(TAG, "Failed to allocate response buffer");
+        finish_llm_network(local_proxy_mode);
+        return -1;
+    }
+
     esp_err_t http_err = http_post_json(full_url,
-                          auth_header[0] ? auth_header : NULL,
-                          json_body, response, sizeof(response));
+                           auth_header[0] ? auth_header : NULL,
+                           json_body, response, 4096);
 
     free(json_body);
 
     if (http_err != ESP_OK) {
+        free(response);
         ESP_LOGE(TAG, "HTTP request failed");
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
 
@@ -651,39 +785,49 @@ int llm_client_call(const char* ssid, const char* pass,
     if (resp_root == NULL) {
         ESP_LOGE(TAG, "Failed to parse LLM response JSON (%d bytes received)",
                  (int)strlen(response));
+        free(response);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
+    free(response);
+    response = NULL;
 
     cJSON* choices = cJSON_GetObjectItem(resp_root, "choices");
     if (choices == NULL || cJSON_GetArraySize(choices) == 0) {
         cJSON_Delete(resp_root);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
 
     cJSON* choice0 = cJSON_GetArrayItem(choices, 0);
     if (choice0 == NULL) {
         cJSON_Delete(resp_root);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
 
     cJSON* message = cJSON_GetObjectItem(choice0, "message");
     if (message == NULL) {
         cJSON_Delete(resp_root);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
 
     cJSON* content = cJSON_GetObjectItem(message, "content");
     if (content == NULL || content->valuestring == NULL) {
         cJSON_Delete(resp_root);
+        finish_llm_network(local_proxy_mode);
         return -1;
     }
 
     // ---- 6. Extract script (strip markdown fences) ----
     extract_script_from_response(content->valuestring, script_out, max_len);
     cJSON_Delete(resp_root);
+    finish_llm_network(local_proxy_mode);
 
     ESP_LOGI(TAG, "Extracted script (%d bytes): %s", (int)strlen(script_out), script_out);
 
-    // STA stays UP — do NOT tear down
+    // STA is disconnected above so ESP-NOW returns to the SoftAP channel
+    // before /api/ai injects the generated script.
     return 0;
 }

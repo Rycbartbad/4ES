@@ -86,3 +86,82 @@ git switch doorbell-sensor
 .\doorbell_sensor.ps1 build -BuildDir build\sensor_usb
 .\doorbell_sensor.ps1 flash -BuildDir build\sensor_usb -Port COM8
 ```
+
+## DeepSeek local proxy for AI + ESP-NOW
+
+Use this mode when the PC is connected to the ESP master SoftAP
+(`http://192.168.4.1/`) and the ESP must still talk to ESP-NOW peers such as
+`doorbell`.
+
+Why: if the ESP master connects directly to a phone hotspot for the LLM call,
+the Wi-Fi channel can move to the phone hotspot channel. ESP-NOW peers stay on
+the configured SoftAP channel, so commands may stop reaching the peer. The
+local proxy keeps the ESP master on the SoftAP/ESP-NOW channel and lets the PC
+forward the DeepSeek request over the PC's internet connection.
+
+Network shape:
+
+- PC Wi-Fi connects to the ESP master AP and usually gets `192.168.4.2`.
+- PC internet comes from USB tethering, Ethernet, or another route.
+- ESP calls the PC proxy at `http://192.168.4.2:18082/v1`.
+- The proxy forwards to `https://api.deepseek.com/chat/completions`.
+
+Start the proxy on the PC:
+
+```powershell
+cd D:\robomaster\good_code\2027\4ES
+python tools\deepseek_proxy.py --host 0.0.0.0 --port 18082
+```
+
+Optional: put the API key in the PC environment instead of the ESP web UI. The
+proxy does not log the key.
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-deepseek-api-key"
+python tools\deepseek_proxy.py --host 0.0.0.0 --port 18082
+```
+
+Check that the proxy is alive:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18082/health
+```
+
+Configure the ESP web console at `http://192.168.4.1/`:
+
+- LLM Base URL: `http://192.168.4.2:18082/v1`
+- Model: `deepseek-chat`
+- API Key: either save it in the web UI, or leave it empty if
+  `DEEPSEEK_API_KEY` is set on the PC proxy process.
+
+Do not rely on the ESP master connecting to the phone hotspot for this mode.
+In local proxy mode the firmware detects the `http://192.168.4.x` LLM URL,
+keeps STA disconnected, and sends the HTTP request through the SoftAP subnet.
+
+Expected status after configuration:
+
+```json
+{
+  "sta_connected": false,
+  "llm_configured": true
+}
+```
+
+Quick test:
+
+1. Make sure the doorbell firmware is flashed as `CONFIG_SENSOR_MODULE_NAME="doorbell"`.
+2. Make sure `/api/status` shows a peer named `doorbell`.
+3. In the AI command box, enter `让蜂鸣器叫两声`.
+4. The generated script should be `print(buzzer_beep(1,2));`.
+5. The execution log should print `0`, meaning the command was sent
+   successfully.
+
+If the PC did not get `192.168.4.2`, check the ESP AP-side address:
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 |
+    Where-Object { $_.IPAddress -like "192.168.4.*" } |
+    Select-Object InterfaceAlias, IPAddress
+```
+
+Use that `192.168.4.x` address in the LLM Base URL.

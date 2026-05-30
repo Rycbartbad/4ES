@@ -903,7 +903,9 @@ ResourceReport validate_resources(ASTNode* ast, Environment* env)
     r.passed = true;
     r.ast_node_count = ast_pool_used();
     r.ast_tree_depth = compute_tree_depth(ast);
-    r.global_bindings_used = (env) ? env->count : 0;
+    int env_bindings = (env) ? env->count : 0;
+    int builtin_bindings = (env_bindings >= BIF_COUNT) ? BIF_COUNT : 0;
+    r.global_bindings_used = env_bindings - builtin_bindings;
 
     WalkState ws;
     memset(&ws, 0, sizeof(ws));

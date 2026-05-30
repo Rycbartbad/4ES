@@ -20,6 +20,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -72,8 +73,11 @@ int script_io_enqueue(const char* script, int len)
         return -1;
     }
 
-    // Copy to stack buffer (no dynamic allocation)
-    char buf[CONFIG_SCRIPT_MAX_LEN];
+    char* buf = (char*)malloc(CONFIG_SCRIPT_MAX_LEN);
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate script queue buffer");
+        return -1;
+    }
     memcpy(buf, script, (size_t)len);
     buf[len] = '\0';
 
@@ -81,18 +85,25 @@ int script_io_enqueue(const char* script, int len)
     BaseType_t ok = xQueueSend(s_script_queue, buf, 0);
     if (ok != pdTRUE) {
         // Queue full — discard oldest item
-        char discard[CONFIG_SCRIPT_MAX_LEN];
-        xQueueReceive(s_script_queue, discard, 0);
+        char* discard = (char*)malloc(CONFIG_SCRIPT_MAX_LEN);
+        if (discard) {
+            xQueueReceive(s_script_queue, discard, 0);
+            free(discard);
+        } else {
+            xQueueReset(s_script_queue);
+        }
 
         ESP_LOGW(TAG, "Script queue full, dropping oldest");
 
         ok = xQueueSend(s_script_queue, buf, 0);
         if (ok != pdTRUE) {
             ESP_LOGE(TAG, "Failed to enqueue even after dropping oldest");
+            free(buf);
             return -1;
         }
     }
 
+    free(buf);
     return 0;
 }
 

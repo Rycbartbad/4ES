@@ -93,6 +93,39 @@ static void  espnow_send_cb(const uint8_t* mac_addr, esp_now_send_status_t statu
 static void  rx_task(void* arg);
 static int   rx_process_one(void);
 
+static esp_err_t ensure_espnow_peer_registered(const uint8_t* mac)
+{
+    if (mac == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (esp_now_is_peer_exist(mac)) {
+        return ESP_OK;
+    }
+
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, mac, 6);
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+    peer.channel = CONFIG_SOFTAP_CHANNEL;
+#else
+    peer.channel = 1;
+#endif
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+
+    esp_err_t ret = esp_now_add_peer(&peer);
+    if (ret == ESP_ERR_ESPNOW_EXIST) {
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "re-add peer " MACSTR " failed: %d", MAC2STR(mac), ret);
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "re-added ESP-NOW peer " MACSTR " on channel %u",
+             MAC2STR(mac), (unsigned)peer.channel);
+    return ESP_OK;
+}
+
 // ----------------------------------------------------------------
 // Init / Deinit
 // ----------------------------------------------------------------
@@ -484,6 +517,15 @@ esp_err_t espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id,
         return ESP_ERR_NOT_FOUND;
     }
 
+    esp_err_t peer_ret = ensure_espnow_peer_registered(peer->mac);
+    if (peer_ret != ESP_OK) {
+        return peer_ret;
+    }
+
+    ESP_LOGI(TAG, "send_cmd module_id=%u cmd=0x%04x to " MACSTR " name=%s state=%d",
+             module_id, (unsigned)cmd_id, MAC2STR(peer->mac),
+             peer->name, (int)peer->state);
+
     esp_err_t ret = esp_now_send(peer->mac, buf, len);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "send_cmd to module_id=%u failed: %d", module_id, ret);
@@ -568,6 +610,13 @@ int espnow_comm_request_read(uint8_t module_id, double* out_values, int max_valu
     // TOCTOU-safe: copy MAC inside lock
     uint8_t dst_mac[6];
     memcpy(dst_mac, peer->mac, 6);
+
+    esp_err_t peer_ret = ensure_espnow_peer_registered(dst_mac);
+    if (peer_ret != ESP_OK) {
+        COMM_UNLOCK();
+        ESP_LOGW(TAG, "request_read(%u): re-add peer failed: %d", module_id, peer_ret);
+        return 0;
+    }
 
     s_resp_pending = true;
     memcpy(s_resp_expected_mac, dst_mac, 6);

@@ -36,5 +36,8 @@ static inline esp_err_t esp_now_add_peer(const esp_now_peer_info_t* peer) {
 static inline esp_err_t esp_now_del_peer(const uint8_t* addr) {
     (void)addr; return ESP_OK;
 }
+static inline bool esp_now_is_peer_exist(const uint8_t* addr) {
+    (void)addr; return false;
+}
 static inline esp_err_t esp_now_register_send_cb(void* cb) { (void)cb; return ESP_OK; }
 static inline esp_err_t esp_now_register_recv_cb(void* cb) { (void)cb; return ESP_OK; }

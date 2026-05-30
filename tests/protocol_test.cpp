@@ -13,14 +13,14 @@ static void test_build_announce(void) {
 
     uint8_t buf[128];
     size_t len = 0;
-    protocol_build_announce(buf, &len, "sensor_5");
+    protocol_build_announce(buf, &len, "sensor_5", "");
 
-    TEST_ASSERT(len == MSG_HEADER_SIZE + 16); // header + name only (no module_id)
+    TEST_ASSERT(len == MSG_HEADER_SIZE + 17); // header + name + cap_len
     MsgHeader hdr;
     TEST_ASSERT(protocol_parse_header(buf, (int)len, &hdr));
     TEST_ASSERT_EQUAL_INT(MSG_VERSION, hdr.version);
     TEST_ASSERT_EQUAL_INT(MSG_ANNOUNCE, hdr.msg_type);
-    TEST_ASSERT_EQUAL_INT(16, hdr.payload_len);
+    TEST_ASSERT_EQUAL_INT(17, hdr.payload_len);
 
     TEST_PASS();
 }
@@ -150,7 +150,7 @@ static void test_roundtrip_all_types(void) {
     size_t len;
 
     // Announce (no module_id — master assigns it dynamically)
-    protocol_build_announce(buf, &len, "test");
+    protocol_build_announce(buf, &len, "test", "");
     MsgHeader hdr;
     TEST_ASSERT(protocol_parse_header(buf, (int)len, &hdr));
     TEST_ASSERT_EQUAL_INT(MSG_ANNOUNCE, hdr.msg_type);

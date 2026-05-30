@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define BIF_COUNT 22
+#define BIF_COUNT 27
 
 // Register all built-in functions into the given environment.
 void register_builtins(Environment* env);

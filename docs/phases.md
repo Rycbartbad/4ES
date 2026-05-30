@@ -358,7 +358,7 @@ main/app_main_sensor.cpp
 
 - [ ] **P6.1** `builtins.h/cpp`：
       - `register_builtins(env)`：在全局环境中注册所有内置函数（静态 FuncObj，不从用户池分配，design.md §6.10）
-      - `BIF_COUNT=21` 枚举（design.md §6.10）
+      - `BIF_COUNT=27` 枚举（design.md §6.10）
       - 基础 I/O：`digital_read`, `digital_write`, `analog_read`, `analog_write` → 调用 `hw_drivers` 层
       - 远程操作：`remote_read(id/name)` → `espnow_comm_request_read()`；`espnow_send(id, cmd, data)`
       - 工具：`sleep(ms)` → `vTaskDelay`；`print(val)` → `printf`

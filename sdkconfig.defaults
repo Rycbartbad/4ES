@@ -32,3 +32,6 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # HTTPD handles captive portal redirects and JSON responses on its own task.
 # Keep this aligned with web_console/Kconfig's larger default.
 CONFIG_HTTP_SERVER_STACK_SIZE=10240
+
+# Builtins currently occupy 27 global bindings; leave room for user vars.
+CONFIG_MAX_BINDINGS=48

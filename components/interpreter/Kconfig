@@ -26,11 +26,11 @@ config FUNC_POOL_SIZE
 
 config MAX_BINDINGS
     int "Max bindings per scope"
-    default 32
+    default 48
     range 16 128
     help
         Maximum variable/function bindings per environment scope.
-        Built-in functions consume ~21 slots.
+        Built-in functions consume 27 slots.
 
 config MAX_FUNC_PARAMS
     int "Max function parameters"

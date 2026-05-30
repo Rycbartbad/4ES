@@ -451,7 +451,7 @@ enum BuiltinFuncId {
     BIF_REMOTE_READ_MAX,
     BIF_REMOTE_READ_MIN,
     BIF_LIST_FREE,
-    BIF_COUNT  // = 21
+    BIF_COUNT  // = 27
 };
 
 // 内置函数使用独立静态数组 (BIF_COUNT 个)，不从用户 func_pool 分配，不受 ctx.reset() 影响
@@ -926,7 +926,7 @@ AI 约束不仅仅停留在 system prompt，解释器运行时强制执行以下
 | CONFIG_AST_POOL_SIZE | 256 | 64-4096 | 解释器 |
 | CONFIG_LIST_POOL_SIZE | 8 | 0-64 | 解释器 (列表) |
 | CONFIG_FUNC_POOL_SIZE | 16 | 0-64 | 解释器 (函数) |
-| CONFIG_MAX_BINDINGS | 32 | 16-128 | 解释器 |
+| CONFIG_MAX_BINDINGS | 48 | 16-128 | 解释器 |
 | CONFIG_MAX_FUNC_PARAMS | 8 | - | 解释器 (函数形参) |
 | CONFIG_MAX_PARSE_DEPTH | 32 | 16-256 | 解释器 (深度防御，与 8KB 任务栈匹配) |
 | CONFIG_MAX_LOOP_ITERATIONS | 10000 | 100-1000000 | 解释器 (循环上限) |
@@ -1159,12 +1159,12 @@ menu "ESP-LEGO Interpreter"
 
     config MAX_BINDINGS
         int "Max bindings per scope"
-        default 32
+        default 48
         range 16 128
         help
             Max variables/functions per scope. Built-in functions
-            occupy 21 slots. User available = MAX_BINDINGS - 21.
-            WARNING: With default 32, only 11 slots remain for user
+            occupy 27 slots. User available = MAX_BINDINGS - 27.
+            WARNING: With default 48, only 21 slots remain for user
             variables and functions. If scripts need >10 variables,
             increase this value accordingly.
 

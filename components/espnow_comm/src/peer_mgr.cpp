@@ -511,16 +511,20 @@ PeerEntry* peer_mgr_find_by_id(uint8_t module_id, bool* out_conflict)
     PEER_LOCK();
     int match_count = 0;
     PeerEntry* first = NULL;
+    PeerEntry* first_active = NULL;
     for (int i = 0; i < MAX_PEERS; i++) {
         if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
         if (s_peers[i].module_id == module_id) {
             match_count++;
             if (first == NULL) first = &s_peers[i];
+            if (s_peers[i].state == PEER_ACTIVE && first_active == NULL) {
+                first_active = &s_peers[i];
+            }
         }
     }
     if (out_conflict) *out_conflict = (match_count > 1);
     PEER_UNLOCK();
-    return first;
+    return first_active ? first_active : first;
 }
 
 PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict)
@@ -534,16 +538,20 @@ PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict)
     PEER_LOCK();
     int match_count = 0;
     PeerEntry* first = NULL;
+    PeerEntry* first_active = NULL;
     for (int i = 0; i < MAX_PEERS; i++) {
         if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
         if (strncmp(s_peers[i].name, name, 16) == 0) {
             match_count++;
             if (first == NULL) first = &s_peers[i];
+            if (s_peers[i].state == PEER_ACTIVE && first_active == NULL) {
+                first_active = &s_peers[i];
+            }
         }
     }
     if (out_conflict) *out_conflict = (match_count > 1);
     PEER_UNLOCK();
-    return first;
+    return first_active ? first_active : first;
 }
 
 PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id)
