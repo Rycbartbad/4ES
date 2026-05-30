@@ -19,6 +19,12 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# ESP-NOW read responses can arrive a few hundred ms after refresh traffic
+# starts, especially while the web UI is polling. Keep the peer online across
+# occasional missed announces.
+CONFIG_READ_TIMEOUT_MS=800
+CONFIG_PEER_TIMEOUT_MS=20000
+
 # Current ESP32-S3 module reports 8MB flash. Match the image header to the
 # real chip size to avoid the boot-time flash-size warning.
 # CONFIG_ESPTOOLPY_FLASHSIZE_2MB is not set
