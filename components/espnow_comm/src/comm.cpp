@@ -120,12 +120,6 @@ esp_err_t espnow_comm_init(void)
         return ret;
     }
 
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(STA) failed: %d", ret);
-        return ret;
-    }
-
     // Create STA netif BEFORE esp_wifi_start().
     // Without this, lwIP has no netif for STA, DHCP never runs,
     // GOT_IP never fires, and all internet connectivity fails.
@@ -136,11 +130,23 @@ esp_err_t espnow_comm_init(void)
     }
     ESP_LOGI(TAG, "STA netif created: %p", (void*)sta_netif);
 
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode failed: %d", ret);
+        return ret;
+    }
+
+    wifi_config_t wifi_config = {};
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %d", ret);
         return ret;
     }
+
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     // Set channel — prefer CONFIG_SOFTAP_CHANNEL if available
 #if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
@@ -198,6 +204,9 @@ esp_err_t espnow_comm_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    // ---- Initialize peer manager before rx_task can process packets ----
+    peer_mgr_init();
+
     // ---- Create RX processing task ----
     BaseType_t task_ok = xTaskCreate(rx_task, "espnow_rx", 4096, NULL, 5, &s_rx_task_handle);
     if (task_ok != pdPASS) {
@@ -210,9 +219,6 @@ esp_err_t espnow_comm_init(void)
         s_comm_mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
-
-    // ---- Initialize peer manager (must be done before any age_scan) ----
-    peer_mgr_init();
 
     ESP_LOGI(TAG, "ESP-NOW comm initialized (channel %d)", channel);
     return ESP_OK;
@@ -283,8 +289,11 @@ void espnow_comm_register_recv_callback(espnow_recv_callback_t cb)
 // ----------------------------------------------------------------
 static void espnow_send_cb(const uint8_t* mac_addr, esp_now_send_status_t status)
 {
+    static int s_send_fail_count = 0;
     if (status != ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGW(TAG, "send status: %d", (int)status);
+        s_send_fail_count++;
+        ESP_LOGW(TAG, "send status: %d (fail #%d)", (int)status,
+                 s_send_fail_count);
     }
 }
 
@@ -299,11 +308,12 @@ static void espnow_recv_cb(const esp_now_recv_info_t* info,
     memcpy(item.data, data, (size_t)len);
     item.len = len;
 
-    // Push to queue (non-blocking; drop if full)
-    BaseType_t woke = pdFALSE;
-    xQueueSendFromISR(s_rx_queue, &item, &woke);
-    // No yield needed — our task is same or lower priority
-    (void)woke;
+    // Push to queue from Wi-Fi task context (non-blocking; drop if full).
+    BaseType_t ok = xQueueSend(s_rx_queue, &item, 0);
+    if (ok != pdTRUE) {
+        ESP_LOGW(TAG, "rx queue full, packet from " MACSTR " dropped",
+                 MAC2STR(info->src_addr));
+    }
 }
 
 // ----------------------------------------------------------------
@@ -379,6 +389,8 @@ static int rx_process_one(void)
 // ----------------------------------------------------------------
 // Send announce (sensor → broadcast)
 // ----------------------------------------------------------------
+static int s_announce_sent_count = 0;
+
 void espnow_comm_send_announce(void)
 {
     uint8_t buf[250];
@@ -389,6 +401,12 @@ void espnow_comm_send_announce(void)
     esp_err_t ret = esp_now_send(s_broadcast_mac, buf, len);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "announce send failed: %d", ret);
+    } else {
+        s_announce_sent_count++;
+        if (s_announce_sent_count <= 3 || s_announce_sent_count % 10 == 0) {
+            ESP_LOGI(TAG, "announce sent x%d (name=%s)",
+                     s_announce_sent_count, g_espnow_module_name);
+        }
     }
 }
 
