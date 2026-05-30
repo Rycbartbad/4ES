@@ -1,0 +1,55 @@
+menu "ESP-LEGO TCP Comm"
+
+    config TCP_PORT
+        int "TCP server port"
+        default 8001
+        range 1024 65535
+        help
+            Port for the binary TCP protocol between master and sensors.
+
+    config TCP_BACKLOG
+        int "TCP listen backlog"
+        default 5
+        range 1 20
+
+    config TCP_SELECT_TIMEOUT_MS
+        int "TCP select() timeout (ms)"
+        default 1000
+        range 100 10000
+
+    config TCP_KEEPALIVE_IDLE_S
+        int "TCP keepalive idle (seconds)"
+        default 30
+        range 5 300
+
+    config TCP_KEEPALIVE_INTERVAL_S
+        int "TCP keepalive probe interval (seconds)"
+        default 5
+        range 1 30
+
+    config TCP_KEEPALIVE_COUNT
+        int "TCP keepalive probe count"
+        default 3
+        range 1 10
+
+    config TCP_RECONNECT_BASE_MS
+        int "Reconnect base delay (ms)"
+        default 1000
+        range 500 10000
+
+    config TCP_RECONNECT_MAX_MS
+        int "Reconnect max delay (ms)"
+        default 8000
+        range 1000 60000
+
+    config TCP_MAX_SENSORS
+        int "Maximum concurrent sensor connections"
+        default 20
+        range 1 20
+
+    config TCP_COMM_STACK_SIZE
+        int "TCP comm task stack size"
+        default 6144
+        range 2048 16384
+
+endmenu

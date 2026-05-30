@@ -17,7 +17,6 @@
 
 #include "sdkconfig.h"
 #include "espnow_comm/peer_mgr.h"
-#include "esp_now.h"
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
@@ -133,18 +132,10 @@ uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name, const cha
         return 0;
     }
 
-    // 4. Register MAC in ESP-NOW underlying layer to permit unicast messages
-    if (!esp_now_is_peer_exist(mac)) {
-        esp_now_peer_info_t peerInfo = {};
-        peerInfo.channel = 0; // Use current channel
-        peerInfo.encrypt = false;
-        memcpy(peerInfo.peer_addr, mac, 6);
-        esp_now_add_peer(&peerInfo);
-    }
-
-    // 5. Fill entry
+    // 4. Fill entry
     PeerEntry* e = &s_peers[slot];
     memset(e, 0, sizeof(PeerEntry));
+    e->socket_fd = -1;
     memcpy(e->mac, mac, 6);
     e->module_id = new_id;
 
@@ -220,22 +211,10 @@ int peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name)
         return -1;
     }
 
-    // 3. Register MAC in ESP-NOW underlying layer for unicast send
-    if (!esp_now_is_peer_exist(mac)) {
-        esp_now_peer_info_t peerInfo = {};
-        peerInfo.channel = 0; // Use current channel
-        peerInfo.encrypt = false;
-        memcpy(peerInfo.peer_addr, mac, 6);
-        esp_err_t add_ret = esp_now_add_peer(&peerInfo);
-        if (add_ret != ESP_OK && add_ret != ESP_ERR_ESPNOW_EXIST) {
-            ESP_LOGW(TAG, "esp_now_add_peer failed for %02x:%02x:%02x:%02x:%02x:%02x: %d",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], add_ret);
-        }
-    }
-
-    // 4. Fill entry
+    // 3. Fill entry
     PeerEntry* e = &s_peers[slot];
     memset(e, 0, sizeof(PeerEntry));
+    e->socket_fd = -1;
     memcpy(e->mac, mac, 6);
     e->module_id = module_id;
 
@@ -653,6 +632,54 @@ bool peer_mgr_is_duplicate(PeerEntry* entry, uint8_t seq_id)
     }
     entry->dedup_seq[slot] = seq_id;
     entry->dedup_count++;
+    PEER_UNLOCK();
+    return false;
+}
+
+// ------------------------------------------------------------------
+// TCP socket fd accessors
+// ------------------------------------------------------------------
+void peer_mgr_set_fd(uint8_t module_id, int fd)
+{
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].module_id == module_id) {
+            s_peers[i].socket_fd = fd;
+            break;
+        }
+    }
+    PEER_UNLOCK();
+}
+
+int peer_mgr_get_fd(uint8_t module_id)
+{
+    int fd = -1;
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].module_id == module_id) {
+            fd = s_peers[i].socket_fd;
+            break;
+        }
+    }
+    PEER_UNLOCK();
+    return fd;
+}
+
+bool peer_mgr_find_by_fd(int fd, uint8_t* out_module_id)
+{
+    if (out_module_id == NULL) return false;
+
+    PEER_LOCK();
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].socket_fd == fd) {
+            *out_module_id = s_peers[i].module_id;
+            PEER_UNLOCK();
+            return true;
+        }
+    }
     PEER_UNLOCK();
     return false;
 }

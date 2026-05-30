@@ -23,13 +23,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
-#include "esp_now.h"
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include "esp_event.h"
 #include "nvs_flash.h"
 
-#include "espnow_comm/comm.h"
+#include "tcp_comm/tcp_comm.h"
 #include "espnow_comm/protocol.h"
 
 #include "hw_drivers/drivers.h"
@@ -292,14 +288,8 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         req_seq = ((const MsgHeader*)data)->seq_id;
     }
 
-    // Ensure peer is added to ESP-NOW so unicast esp_now_send succeeds
-    if (!esp_now_is_peer_exist(src_mac)) {
-        esp_now_peer_info_t peerInfo = {};
-        peerInfo.channel = 0;
-        peerInfo.encrypt = false;
-        memcpy(peerInfo.peer_addr, src_mac, 6);
-        esp_now_add_peer(&peerInfo);
-    }
+    // TCP sends on the persistent connection — no need to register peers
+    (void)src_mac;  // unused in TCP mode
 
     switch (msg_type) {
 
@@ -326,7 +316,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, 3);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #elif USE_SENSOR_BH1750
         static bool init_done = false;
@@ -344,7 +334,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, 1);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #elif USE_SENSOR_RAINDROP
         static bool init_done = false;
@@ -362,7 +352,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, 1);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #elif USE_SENSOR_VIBRATION
         static bool init_done = false;
@@ -380,7 +370,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, 1);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #elif USE_SENSOR_DHT11
         double values[2] = {0.0, 0.0};
@@ -397,7 +387,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, 2);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #else
         // Read ALL local sensor pins and pack them into a structured response.
@@ -417,19 +407,14 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                                   values, SENSOR_ADC_COUNT);
 
         if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
+            tcp_comm_send_raw(resp_buf, resp_len);
         }
 #endif
         break;
     }
 
     case MSG_ANNOUNCE: {
-        if (len >= MSG_HEADER_SIZE + 1) {
-            const char* ann_name = (const char*)(data + MSG_HEADER_SIZE);
-            if (strncmp(ann_name, "master", 6) == 0) {
-                espnow_comm_send_announce();
-            }
-        }
+        // In TCP mode, sensor is always connected — no re-announce needed
         break;
     }
 
@@ -445,7 +430,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
             size_t ack_len = 0;
             protocol_build_ack(ack_buf, &ack_len, 0, req_seq);
             if (ack_len > 0) {
-                esp_now_send(src_mac, ack_buf, ack_len);
+                tcp_comm_send_raw(ack_buf, ack_len);
             }
         }
         break;
@@ -453,26 +438,6 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
 
     default:
         break;
-    }
-}
-
-// ====================================================================
-// Announce task — sends periodic broadcast announces
-// ====================================================================
-
-static void announce_task(void* arg)
-{
-    (void)arg;
-    while (1) {
-        espnow_comm_send_announce();
-
-        // Apply random jitter to avoid collision when multiple sensors
-        // power on simultaneously (design.md §4.3).
-        int jitter = ((int)esp_random() % (CONFIG_ANNOUNCE_JITTER_MS * 2))
-                     - CONFIG_ANNOUNCE_JITTER_MS;
-        int delay_ms = CONFIG_ANNOUNCE_INTERVAL_MS + jitter;
-        if (delay_ms < 100) delay_ms = 100;  // minimum 100ms guard
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
@@ -493,31 +458,25 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // ---- Initialize WiFi and ESP-NOW ----
-    // espnow_comm_init() safely handles all wifi netif, event loops, and wifi_init setup
-    ESP_ERROR_CHECK(espnow_comm_init());
+    // ---- Initialize TCP client (WiFi STA + TCP connect) ----
+    // tcp_comm_init() handles WiFi init, TCP connect to 192.168.4.1:8001,
+    // and starts the client task with auto-reconnect.
+    ESP_ERROR_CHECK(tcp_comm_init());
 
-    // ---- Set module name + capability (used in announce) ----
-    strncpy(g_espnow_module_name, s_module_name,
-            sizeof(g_espnow_module_name));
-    g_espnow_module_name[sizeof(g_espnow_module_name) - 1] = '\0';
+    // ---- Set module name + capability (used in IDENTIFY_ACK) ----
+    strncpy(g_tcp_module_name, s_module_name,
+            sizeof(g_tcp_module_name));
+    g_tcp_module_name[sizeof(g_tcp_module_name) - 1] = '\0';
 
-    strncpy(g_espnow_module_capability, SENSOR_CAPABILITY,
-            sizeof(g_espnow_module_capability));
-    g_espnow_module_capability[sizeof(g_espnow_module_capability) - 1] = '\0';
+    strncpy(g_tcp_module_capability, SENSOR_CAPABILITY,
+            sizeof(g_tcp_module_capability));
+    g_tcp_module_capability[sizeof(g_tcp_module_capability) - 1] = '\0';
 
     // ---- Register receive callback ----
-    espnow_comm_register_recv_callback(sensor_recv_cb);
+    tcp_comm_register_recv_callback(sensor_recv_cb);
 
-    // ---- Create announce task ----
-    BaseType_t tsk = xTaskCreate(announce_task, "announce",
-                                  2048, NULL, 5, NULL);
-    if (tsk != pdPASS) {
-        printf("ERROR: Failed to create announce task\n");
-    }
-
-    printf("Sensor ready — name=%s\n",
-           g_espnow_module_name);
+    printf("Sensor ready — name=%s (TCP mode)\n",
+           g_tcp_module_name);
 
     // ---- Main loop ----
     while (1) {

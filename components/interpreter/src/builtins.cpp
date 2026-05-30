@@ -34,7 +34,7 @@
 
 #include "hw_drivers/drivers.h"
 
-#include "espnow_comm/comm.h"
+#include "tcp_comm/tcp_comm.h"
 #include "espnow_comm/peer_mgr.h"
 
 #include "esp_log.h"
@@ -545,7 +545,7 @@ static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
 
     // Fetch all sensor values from the remote module
     double values[DATA_RESP_MAX_VALUES];
-    int count = espnow_comm_request_read(module_id, values, DATA_RESP_MAX_VALUES);
+    int count = tcp_comm_request_read(module_id, values, DATA_RESP_MAX_VALUES);
 
     if (count <= 0) return bval_num(0.0);
 
@@ -599,7 +599,7 @@ static Value bif_espnow_send(Value* args, int n, ExecutionContext* ctx)
         }
     }
 
-    esp_err_t err = espnow_comm_send_cmd(module_id, cmd_id,
+    esp_err_t err = tcp_comm_send_cmd(module_id, cmd_id,
                                           payload, (uint8_t)payload_len);
     return bval_num((double)err);
 }
@@ -699,7 +699,7 @@ static Value bif_remote_read_avg(Value* args, int n, ExecutionContext* ctx)
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
         if (sensor_call_check(ctx)) { limit_hit = true; break; }
-        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        int cnt = tcp_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
         if (cnt > 0) { sum += values[0]; valid++; }
     }
 
@@ -727,7 +727,7 @@ static Value bif_remote_read_max(Value* args, int n, ExecutionContext* ctx)
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
         if (sensor_call_check(ctx)) { limit_hit = true; break; }
-        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        int cnt = tcp_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
         if (cnt > 0) { max_val = (valid == 0 || values[0] > max_val) ? values[0] : max_val; valid++; }
     }
 
@@ -752,7 +752,7 @@ static Value bif_remote_read_min(Value* args, int n, ExecutionContext* ctx)
     for (int i = 0; i < id_count; i++) {
         if (ctx->constraint_violated) break;
         if (sensor_call_check(ctx)) { limit_hit = true; break; }
-        int cnt = espnow_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
+        int cnt = tcp_comm_request_read(ids[i], values, DATA_RESP_MAX_VALUES);
         if (cnt > 0) { min_val = (valid == 0 || values[0] < min_val) ? values[0] : min_val; valid++; }
     }
 

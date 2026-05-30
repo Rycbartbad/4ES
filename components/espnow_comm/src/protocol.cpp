@@ -43,8 +43,8 @@ void protocol_build_announce(uint8_t* buf, size_t* len, const char* name, const 
         if (cap_len > 0) {
             memcpy(pay + 1, capability, cap_len);
         }
-        hdr->payload_len = 16 + 1 + (uint8_t)cap_len;
-        *len = MSG_HEADER_SIZE + 16 + 1 + (uint8_t)cap_len;
+        hdr->payload_len = 16 + 1 + (uint16_t)cap_len;
+        *len = MSG_HEADER_SIZE + 16 + 1 + (uint16_t)cap_len;
     } else {
         pay[0] = 0;  // cap_len = 0 → no capability
         hdr->payload_len = 16 + 1;
@@ -104,7 +104,7 @@ void protocol_build_ack(uint8_t* buf, size_t* len,
 void protocol_build_cmd(uint8_t* buf, size_t* len,
                         uint8_t target_id, uint8_t seq_id,
                         uint16_t cmd_id,
-                        const uint8_t* payload, uint8_t payload_len)
+                        const uint8_t* payload, uint16_t payload_len)
 {
     MsgHeader* hdr = (MsgHeader*)buf;
     hdr->version   = MSG_VERSION;
@@ -209,4 +209,101 @@ bool protocol_parse_announce(const uint8_t* data, int len,
     }
 
     return true;
+}
+
+// ----------------------------------------------------------------
+// Identify (TCP migration)
+// ----------------------------------------------------------------
+
+void protocol_build_identify(uint8_t* buf, size_t* len,
+                             uint8_t seq_id,
+                             const char* name, const char* capability)
+{
+    MsgHeader* hdr = (MsgHeader*)buf;
+    hdr->version   = MSG_VERSION;
+    hdr->msg_type  = MSG_IDENTIFY;
+    hdr->target_id = 0xFF;          // broadcast
+    hdr->seq_id    = seq_id;
+    hdr->cmd_id    = 0;
+
+    // Payload: [16B name, zero-padded][1B cap_len][cap_len B capability]
+    uint8_t* pay = buf + MSG_HEADER_SIZE;
+
+    // Name (max 16 chars)
+    size_t name_len = strlen(name);
+    if (name_len > 16) name_len = 16;
+    memcpy(pay, name, name_len);
+    if (name_len < 16) {
+        memset(pay + name_len, 0, 16 - name_len);
+    }
+    pay += 16;
+
+    // Capability descriptor
+    if (capability != NULL) {
+        size_t cap_len = strlen(capability);
+        pay[0] = (uint8_t)cap_len;
+        if (cap_len > 0) {
+            memcpy(pay + 1, capability, cap_len);
+        }
+        hdr->payload_len = 16 + 1 + (uint16_t)cap_len;
+        *len = MSG_HEADER_SIZE + 16 + 1 + (uint16_t)cap_len;
+    } else {
+        pay[0] = 0;
+        hdr->payload_len = 16 + 1;
+        *len = MSG_HEADER_SIZE + 16 + 1;
+    }
+}
+
+bool protocol_parse_identify(const uint8_t* data, int len,
+                              char* name_out, int name_max,
+                              char* cap_out, int cap_max)
+{
+    if (data == NULL || name_out == NULL || cap_out == NULL) return false;
+    if (len < (int)(MSG_HEADER_SIZE + 16)) return false;
+
+    const uint8_t* pay = data + MSG_HEADER_SIZE;
+
+    // Extract name (16 bytes, zero-padded)
+    int name_len = 16;
+    for (int i = 0; i < 16 && i < name_max - 1; i++) {
+        if (pay[i] == 0) { name_len = i; break; }
+    }
+    if (name_len > name_max - 1) name_len = name_max - 1;
+    memcpy(name_out, pay, (size_t)name_len);
+    name_out[name_len] = '\0';
+
+    // Extract capability descriptor
+    if (len >= (int)(MSG_HEADER_SIZE + 17)) {
+        uint8_t cap_len = pay[16];
+        if (cap_len > 0 && (int)(MSG_HEADER_SIZE + 16 + 1 + cap_len) <= len) {
+            int copy = cap_len;
+            if (copy > cap_max - 1) copy = cap_max - 1;
+            memcpy(cap_out, pay + 17, (size_t)copy);
+            cap_out[copy] = '\0';
+        } else {
+            cap_out[0] = '\0';
+        }
+    } else {
+        cap_out[0] = '\0';
+    }
+
+    return true;
+}
+
+void protocol_build_identify_ack(uint8_t* buf, size_t* len,
+                                 uint8_t module_id, uint8_t seq_id)
+{
+    MsgHeader* hdr = (MsgHeader*)buf;
+    hdr->version   = MSG_VERSION;
+    hdr->msg_type  = MSG_IDENTIFY_ACK;
+    hdr->target_id = 0xFF;          // broadcast
+    hdr->seq_id    = seq_id;
+    hdr->cmd_id    = 0;
+
+    // Payload: [1B module_id]
+    uint8_t* pay = buf + MSG_HEADER_SIZE;
+    pay[0] = module_id;
+    hdr->payload_len = 1;
+
+    *len = MSG_HEADER_SIZE + 1;
 }

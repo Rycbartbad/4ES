@@ -6,5 +6,5 @@ idf_component_register(SRCS "src/ast.cpp"
                               "src/builtins.cpp"
                               "src/intern.cpp"
                        INCLUDE_DIRS "include"
-                       REQUIRES ""
+                        REQUIRES "tcp_comm"
                        PRIV_REQUIRES "espnow_comm" "hw_drivers" "freertos")

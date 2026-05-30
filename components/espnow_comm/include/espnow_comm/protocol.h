@@ -12,11 +12,13 @@ extern "C" {
 #define MSG_VERSION      0x01
 
 typedef enum {
-    MSG_ANNOUNCE   = 0x10,
-    MSG_CMD        = 0x20,
-    MSG_DATA_REQ   = 0x30,
-    MSG_DATA_RESP  = 0x40,
-    MSG_ACK        = 0x50,
+    MSG_ANNOUNCE     = 0x10,
+    MSG_CMD          = 0x20,
+    MSG_DATA_REQ     = 0x30,
+    MSG_DATA_RESP    = 0x40,
+    MSG_ACK          = 0x50,
+    MSG_IDENTIFY     = 0x60,
+    MSG_IDENTIFY_ACK = 0x70,
 } MsgType;
 
 // ── Data exchange (msg_type-driven) ──
@@ -31,13 +33,14 @@ typedef enum {
 //   #define CMD_LED_POWER_ON 0x0002
 
 // Message header — design.md §7.2
+// sizeof(MsgHeader) = 8 (was 7 before payload_len grew to uint16_t)
 typedef struct __attribute__((packed)) {
     uint8_t  version;
     uint8_t  msg_type;
     uint8_t  target_id;
     uint8_t  seq_id;
     uint16_t cmd_id;
-    uint8_t  payload_len;
+    uint16_t payload_len;
 } MsgHeader;
 
 #define MSG_HEADER_SIZE sizeof(MsgHeader)
@@ -56,12 +59,17 @@ void protocol_build_announce(uint8_t* buf, size_t* len, const char* name, const 
 void protocol_build_data_req(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
 void protocol_build_data_resp(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, const double* values, uint8_t value_count);
 void protocol_build_ack(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id);
-void protocol_build_cmd(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, uint16_t cmd_id, const uint8_t* payload, uint8_t payload_len);
+void protocol_build_cmd(uint8_t* buf, size_t* len, uint8_t target_id, uint8_t seq_id, uint16_t cmd_id, const uint8_t* payload, uint16_t payload_len);
 
 // Packet parsers
 bool protocol_parse_header(const uint8_t* data, int len, MsgHeader* header_out);
 int  protocol_extract_values(const uint8_t* data, int len, double* out_values, int max_values);
 bool protocol_parse_announce(const uint8_t* data, int len, char* name_out, int name_max, char* cap_out, int cap_max);
+
+// Identify (TCP migration — no 250-byte ESP-NOW limit)
+void protocol_build_identify(uint8_t* buf, size_t* len, uint8_t seq_id, const char* name, const char* capability);
+bool protocol_parse_identify(const uint8_t* data, int len, char* name_out, int name_max, char* cap_out, int cap_max);
+void protocol_build_identify_ack(uint8_t* buf, size_t* len, uint8_t module_id, uint8_t seq_id);
 
 #ifdef __cplusplus
 }

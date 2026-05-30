@@ -5,7 +5,7 @@ idf_component_register(
         "src/ui_peer_view.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
-    REQUIRES lvgl lcd_touch esp_timer espnow_comm freertos
+    REQUIRES lvgl lcd_touch esp_timer espnow_comm tcp_comm freertos
 )
 
 set(CMAKE_CXX_STANDARD 17)

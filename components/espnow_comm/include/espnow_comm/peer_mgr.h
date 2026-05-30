@@ -38,6 +38,8 @@ typedef struct {
     // Dedup sliding window — design.md §5.1
     uint8_t  dedup_seq[8];
     int      dedup_count;
+
+    int      socket_fd;       // TCP socket fd (-1 = no connection)
 } PeerEntry;
 
 #define MAX_PEERS CONFIG_MAX_PEERS
@@ -64,6 +66,11 @@ PeerEntry** peer_mgr_list(int* count);
 void peer_mgr_age_scan(TickType_t now);
 void peer_mgr_set_pending(PeerEntry* entry);
 bool peer_mgr_is_duplicate(PeerEntry* entry, uint8_t seq_id);
+
+// TCP socket fd accessors
+void peer_mgr_set_fd(uint8_t module_id, int fd);
+int  peer_mgr_get_fd(uint8_t module_id);
+bool peer_mgr_find_by_fd(int fd, uint8_t* out_module_id);
 
 #ifdef __cplusplus
 }

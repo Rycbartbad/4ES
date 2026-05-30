@@ -41,7 +41,7 @@
 #include "ui_lvgl/ui_lvgl.h"
 
 #include "espnow_comm/peer_mgr.h"
-#include "espnow_comm/comm.h"
+#include "tcp_comm/tcp_comm.h"
 
 #include "script_io/script_io.h"
 
@@ -148,7 +148,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // ---- 2. Initialise ESP-NOW (Wi-Fi + peer_mgr + rx_task) ----
-    ESP_ERROR_CHECK(espnow_comm_init());
+    ESP_ERROR_CHECK(tcp_comm_init());
 
     // ---- 2b. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
     bool lcd_ready = false;

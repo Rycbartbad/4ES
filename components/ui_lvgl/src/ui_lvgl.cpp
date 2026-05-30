@@ -10,6 +10,7 @@
 
 #include "espnow_comm/comm.h"
 #include "espnow_comm/peer_mgr.h"
+#include "tcp_comm/tcp_comm.h"
 #include "lcd_touch/lcd_touch.h"
 #include "ui_lvgl/ui_lvgl.h"
 #include "ui_lvgl_internal.h"
@@ -210,7 +211,7 @@ static void sensor_poll_task(void* arg)
             }
             const uint8_t module_id = peers[i]->module_id;
             double values[UI_SENSOR_VALUE_MAX];
-            int value_count = espnow_comm_request_read(module_id, values,
+            int value_count = tcp_comm_request_read(module_id, values,
                                                        UI_SENSOR_VALUE_MAX);
             store_sensor_values(module_id, values, value_count);
             vTaskDelay(pdMS_TO_TICKS(20));
