@@ -402,7 +402,8 @@ static int build_system_prompt(char* buf, int max_len)
         "- remote_read_max(ids)->num    read multiple remotes, return max value\n"
         "- remote_read_min(ids)->num    read multiple remotes, return min value\n"
         "- read_sensor(pin) -> number   read LOCAL analog sensor (ADC pin), returns 0-4095\n"
-        "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n\n");
+        "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
+        "- mic_level() -> number        local INMP441 microphone level, 0-100\n\n");
 
     // Online devices
     pos += snprintf(buf + pos, (size_t)(max_len - pos),

@@ -8,9 +8,9 @@
 extern "C" {
 #endif
 
-#define BIF_COUNT 21
+#define BIF_COUNT 22
 
-// Register all 21 built-in functions into the given environment.
+// Register all built-in functions into the given environment.
 void register_builtins(Environment* env);
 
 // Builtin dispatch — called from interpreter.cpp call_builtin().

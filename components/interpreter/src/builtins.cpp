@@ -5,7 +5,7 @@
  *
  * ESP-LEGO V1.0 — Built-in functions (P6)
  *
- * 21 builtins registered into the global environment:
+ * 22 builtins registered into the global environment:
  *
  *   GPIO/ADC/PWM:      digital_read, digital_write, analog_read, analog_write
  *   Timing:            sleep
@@ -14,7 +14,7 @@
  *   ESP-NOW comm:      remote_read, espnow_send
  *   List ops:          list_new, list_get, list_set, list_len, list_free
  *   Aggregation:       remote_read_avg, remote_read_max, remote_read_min
- *   Sensor aliases:    read_sensor, send_motor
+ *   Sensor aliases:    read_sensor, send_motor, mic_level
  */
 
 #include "sdkconfig.h"
@@ -97,7 +97,7 @@ typedef struct {
     BuiltinFunc func;
 } BuiltinEntry;
 
-// ---- Forward declarations of all 21 builtin implementations ---------
+// ---- Forward declarations of all builtin implementations -------------
 
 static Value bif_digital_read(Value* args, int n, ExecutionContext* ctx);
 static Value bif_digital_write(Value* args, int n, ExecutionContext* ctx);
@@ -120,6 +120,7 @@ static Value bif_remote_read_min(Value* args, int n, ExecutionContext* ctx);
 static Value bif_list_free_builtin(Value* args, int n, ExecutionContext* ctx);
 static Value bif_read_sensor(Value* args, int n, ExecutionContext* ctx);
 static Value bif_send_motor(Value* args, int n, ExecutionContext* ctx);
+static Value bif_mic_level(Value* args, int n, ExecutionContext* ctx);
 
 // ---- Registration table ----------------------------------------------
 
@@ -145,6 +146,7 @@ static const BuiltinEntry s_builtin_entries[] = {
     {"list_free",        1, bif_list_free_builtin},
     {"read_sensor",      1, bif_read_sensor},
     {"send_motor",       2, bif_send_motor},
+    {"mic_level",        0, bif_mic_level},
 };
 
 // ---- Persistent FuncObj array for builtins (body = NULL = builtin) ---
@@ -240,6 +242,7 @@ Value call_builtin_by_name(const char* name, const Value* args,
     if (strcmp(name, "list_free")       == 0) return bif_list_free_builtin(local_args, n, ctx);
     if (strcmp(name, "read_sensor")     == 0) return bif_read_sensor(local_args, n, ctx);
     if (strcmp(name, "send_motor")      == 0) return bif_send_motor(local_args, n, ctx);
+    if (strcmp(name, "mic_level")       == 0) return bif_mic_level(local_args, n, ctx);
 
     // Not found — signal constraint violation
     ctx->constraint_violated = true;
@@ -792,4 +795,16 @@ static Value bif_send_motor(Value* args, int n, ExecutionContext* ctx)
 {
     // Delegates to analog_write
     return bif_analog_write(args, n, ctx);
+}
+
+// ====================================================================
+// 22. mic_level() - INMP441 I2S microphone level, 0..100 percent FS
+// ====================================================================
+
+static Value bif_mic_level(Value* args, int n, ExecutionContext* ctx)
+{
+    (void)args;
+    (void)n;
+    (void)ctx;
+    return bval_num(hw_mic_level());
 }

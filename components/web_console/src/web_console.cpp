@@ -1223,6 +1223,8 @@ esp_err_t web_console_init(void)
     // Suppress noisy 404/405 WARNINGs from httpd_uri (normal during
     // captive portal operation — OS/app probes hit unknown URIs).
     esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_parse", ESP_LOG_ERROR);
 
     // ---- 1. Initialise script inject subsystem ----
     script_inject_init();

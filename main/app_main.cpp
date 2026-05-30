@@ -150,7 +150,14 @@ extern "C" void app_main(void)
     // ---- 2. Initialise ESP-NOW (Wi-Fi + peer_mgr + rx_task) ----
     ESP_ERROR_CHECK(espnow_comm_init());
 
-    // ---- 2b. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
+    // ---- 2b. Initialise local INMP441 microphone (optional hardware) ----
+    ret = hw_mic_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "INMP441 mic init failed (%d); mic_level() will return 0",
+                 ret);
+    }
+
+    // ---- 2c. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
     bool lcd_ready = false;
     {
         esp_err_t lcd_ret = lcd_touch_init();
@@ -163,7 +170,7 @@ extern "C" void app_main(void)
         }
     }
 
-    // ---- 2c. Initialise onboard LVGL diagnostics UI (non-fatal) ----
+    // ---- 2d. Initialise onboard LVGL diagnostics UI (non-fatal) ----
     if (lcd_ready) {
         esp_err_t ui_ret = ui_lvgl_init();
         if (ui_ret != ESP_OK) {
