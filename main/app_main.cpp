@@ -41,6 +41,7 @@
 #include "ui_lvgl/ui_lvgl.h"
 
 #include "espnow_comm/peer_mgr.h"
+#include "espnow_comm/comm.h"
 #include "tcp_comm/tcp_comm.h"
 
 #include "script_io/script_io.h"
@@ -147,7 +148,12 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // ---- 2. Initialise ESP-NOW (Wi-Fi + peer_mgr + rx_task) ----
+    // ---- 2. Initialise EspNOW (Wi-Fi + peer_mgr + rx_task) ----
+    // Must be called first to initialize WiFi and lwIP TCP/IP stack
+    // before tcp_comm_init() creates TCP sockets.
+    ESP_ERROR_CHECK(espnow_comm_init());
+
+    // ---- 2. Initialise TCP comm (TCP server on port 8001) ----
     ESP_ERROR_CHECK(tcp_comm_init());
 
     // ---- 2b. Initialise LCD (ST7789, 240×240) + Touch (CST816D) ----
