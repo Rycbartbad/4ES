@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "esp_now.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -623,6 +624,11 @@ void peer_mgr_age_scan(TickType_t now)
             (now - e->last_seen > pdMS_TO_TICKS(CONFIG_PEER_TIMEOUT_MS))) {
             e->state = PEER_OFFLINE;
             ESP_LOGI(TAG, "peer %s timed out → OFFLINE", e->peer_id);
+
+            // Remove from ESP-NOW internal peer table so the slot
+            // can be reused.  Stale entries prevent esp_now_add_peer
+            // from succeeding for new sensors.
+            esp_now_del_peer(e->mac);
         }
         PEER_UNLOCK();
     }

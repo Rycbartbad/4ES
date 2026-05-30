@@ -162,6 +162,14 @@ esp_err_t espnow_comm_init(void)
     // interface is idle (not connected to any AP).
     esp_wifi_set_ps(WIFI_PS_NONE);
 
+    // Reduce TX power on ESP32-C3 sensor to mitigate antenna
+    // reflection issues common on C3 boards (Arduino-ESP32 #6767).
+    // Also reduces heat on the single-core C3.
+    // Value: 34 = 8.5 dBm (ESP-IDF uses 0.25 dBm units).
+#if CONFIG_DEVICE_ROLE_SENSOR
+    esp_wifi_set_max_tx_power(34);
+#endif
+
     // Set channel — prefer CONFIG_SOFTAP_CHANNEL if available
 #if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
     uint8_t channel = CONFIG_SOFTAP_CHANNEL;
