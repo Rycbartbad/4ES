@@ -1,0 +1,3 @@
+# Common ESP-LEGO defaults.
+CONFIG_IDF_TARGET="esp32s3"
+

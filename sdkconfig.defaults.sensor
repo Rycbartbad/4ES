@@ -1,0 +1,14 @@
+# Doorbell sensor submodule firmware defaults.
+CONFIG_DEVICE_ROLE_SENSOR=y
+# CONFIG_DEVICE_ROLE_MASTER is not set
+
+# Sensor firmware does not need the master web console.
+# CONFIG_WEB_CONSOLE_ENABLED is not set
+
+# The current board is connected over ESP32-S3 native USB Serial/JTAG.
+# Route printf/log output to the same USB COM port used for flashing.
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Module name announced to the master.
+CONFIG_SENSOR_MODULE_NAME="doorbell"

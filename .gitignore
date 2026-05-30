@@ -1,0 +1,21 @@
+# ESP-IDF build outputs
+build/
+build_*/
+managed_components/
+dependencies.lock
+
+# Generated SDK configuration
+sdkconfig
+sdkconfig.old
+
+# Python/tool caches
+__pycache__/
+.pytest_cache/
+
+# Editor/system noise
+.vscode/ipch/
+.idea/
+*.swp
+*.tmp
+Thumbs.db
+Desktop.ini
