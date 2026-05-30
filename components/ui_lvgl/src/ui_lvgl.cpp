@@ -198,6 +198,8 @@ static void sensor_poll_task(void* arg)
     (void)arg;
 
     while (1) {
+        TickType_t poll_start = xTaskGetTickCount();
+
         int count = 0;
         PeerEntry** peers = peer_mgr_list(&count);
         if (count > UI_SENSOR_CARD_MAX) {
@@ -212,11 +214,25 @@ static void sensor_poll_task(void* arg)
             double values[UI_SENSOR_VALUE_MAX];
             int value_count = espnow_comm_request_read(module_id, values,
                                                        UI_SENSOR_VALUE_MAX);
-            store_sensor_values(module_id, values, value_count);
+            // Only update cached values on a successful read.
+            // When espnow_comm_request_read returns 0 (concurrent request
+            // rejected or genuine timeout), preserve the last good reading
+            // so the UI does not flash zeros.
+            if (value_count > 0) {
+                store_sensor_values(module_id, values, value_count);
+            }
             vTaskDelay(pdMS_TO_TICKS(20));
         }
 
-        vTaskDelay(pdMS_TO_TICKS(UI_SENSOR_POLL_MS));
+        // Dynamic wait: subtract time already spent polling so the total
+        // cycle stays close to UI_SENSOR_POLL_MS even when sensors are slow
+        // or offline (each timed-out request can take up to 600 ms).
+        TickType_t elapsed = xTaskGetTickCount() - poll_start;
+        TickType_t wait_ticks = pdMS_TO_TICKS(UI_SENSOR_POLL_MS);
+        if (elapsed < wait_ticks) {
+            vTaskDelay(wait_ticks - elapsed);
+        }
+        // else: requests already consumed the full interval, loop immediately
     }
 }
 

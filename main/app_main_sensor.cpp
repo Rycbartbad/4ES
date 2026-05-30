@@ -22,6 +22,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_system.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
@@ -106,11 +107,18 @@ static const char* SENSOR_CAPABILITY =
 static bool dht11_read(double* temperature, double* humidity) {
     uint8_t data[5] = {0, 0, 0, 0, 0};
 
-    // Send start signal
+    // Send start signal (18 ms low — not timing-critical)
     gpio_set_direction(DHT11_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(DHT11_PIN, 0);
-    vTaskDelay(pdMS_TO_TICKS(20)); // DHT11 requires min 18ms
+    vTaskDelay(pdMS_TO_TICKS(20));
     gpio_set_level(DHT11_PIN, 1);
+
+    // Suspend the FreeRTOS scheduler for the µs-level bit-read window
+    // (~6 ms total). Interrupts remain active so the Wi-Fi/ESP-NOW driver
+    // continues to function. Each early-return path must call xTaskResumeAll()
+    // before returning to restore the scheduler.
+    vTaskSuspendAll();
+
     esp_rom_delay_us(30);
 
     // Prepare to read
@@ -119,13 +127,13 @@ static bool dht11_read(double* temperature, double* humidity) {
     // Wait for DHT11 response signal (low then high)
     int wait_time = 0;
     while (gpio_get_level(DHT11_PIN) == 1 && wait_time < 100) { esp_rom_delay_us(1); wait_time++; }
-    if (wait_time >= 100) return false;
+    if (wait_time >= 100) { xTaskResumeAll(); return false; }
     wait_time = 0;
     while (gpio_get_level(DHT11_PIN) == 0 && wait_time < 100) { esp_rom_delay_us(1); wait_time++; }
-    if (wait_time >= 100) return false;
+    if (wait_time >= 100) { xTaskResumeAll(); return false; }
     wait_time = 0;
     while (gpio_get_level(DHT11_PIN) == 1 && wait_time < 100) { esp_rom_delay_us(1); wait_time++; }
-    if (wait_time >= 100) return false;
+    if (wait_time >= 100) { xTaskResumeAll(); return false; }
 
     // Read 40 bits of data
     for (int i = 0; i < 40; i++) {
@@ -140,6 +148,8 @@ static bool dht11_read(double* temperature, double* humidity) {
             data[i / 8] |= 1;
         }
     }
+
+    xTaskResumeAll();  // resume scheduler before any non-critical work
 
     uint8_t checksum = data[0] + data[1] + data[2] + data[3];
     if (checksum == data[4]) {
@@ -281,18 +291,121 @@ static bool jw01_read(double* co2, double* tvoc, double* ch2o) {
 #endif
 
 // ====================================================================
-// Receive callback — handles DATA_REQ and CMD messages from master
+// Command queue — recv_cb enqueues only; cmd_task does the actual work.
+//
+// This prevents rx_task from blocking during sensor reads (JW01 UART
+// 100 ms wait, BH1750 180 ms vTaskDelay, DHT11 busy-wait).  Without
+// this separation, rx_task stalls and ESP-NOW packets accumulate until
+// the 8-slot queue overflows.
+// ====================================================================
+
+typedef struct {
+    uint8_t src_mac[6];   // sender MAC for unicast reply
+    uint8_t msg_type;     // MSG_DATA_REQ or MSG_CMD
+    uint8_t req_seq;      // seq_id from request header — echoed in response
+    uint8_t payload[16];  // CMD payload bytes (pin, val, …)
+    int     payload_len;  // number of valid bytes in payload[]
+} SensorCmd;
+
+#define SENSOR_CMD_QUEUE_LEN 4
+static QueueHandle_t s_cmd_queue = NULL;
+
+// ====================================================================
+// handle_data_req — read sensor and send DATA_RESP (called from cmd_task)
+// ====================================================================
+
+static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
+{
+    uint8_t resp_buf[128];
+    size_t  resp_len = 0;
+
+#if USE_SENSOR_JW01
+    double values[3] = {0.0, 0.0, 0.0};
+    double co2 = 0.0, tvoc = 0.0, ch2o = 0.0;
+    if (jw01_read(&co2, &tvoc, &ch2o)) {
+        values[0] = co2;
+        values[1] = tvoc;
+        values[2] = ch2o;
+    }
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 3);
+
+#elif USE_SENSOR_BH1750
+    double values[1] = {bh1750_read()};
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 1);
+
+#elif USE_SENSOR_RAINDROP
+    double values[1] = {raindrop_read()};
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 1);
+
+#elif USE_SENSOR_VIBRATION
+    double values[1] = {vibration_read()};
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 1);
+
+#elif USE_SENSOR_DHT11
+    double values[2] = {0.0, 0.0};
+    double temp = 0.0, hum = 0.0;
+    if (dht11_read(&temp, &hum)) {
+        values[0] = temp;
+        values[1] = hum;
+    }
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 2);
+
+#else
+    // Generic ADC sensor — reads pins 4, 5, 6
+    #define SENSOR_ADC_PINS   {4, 5, 6}
+    #define SENSOR_ADC_COUNT  3
+    static const uint8_t s_adc_pins[SENSOR_ADC_COUNT] = SENSOR_ADC_PINS;
+    double values[SENSOR_ADC_COUNT];
+    for (int i = 0; i < SENSOR_ADC_COUNT; i++) {
+        values[i] = (double)hw_adc_read(s_adc_pins[i]);
+    }
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
+                              values, SENSOR_ADC_COUNT);
+#endif
+
+    if (resp_len > 0) {
+        esp_now_send(src_mac, resp_buf, resp_len);
+    }
+}
+
+// ====================================================================
+// handle_cmd — execute GPIO command and send ACK (called from cmd_task)
+// ====================================================================
+
+static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
+                       const uint8_t* payload, int payload_len)
+{
+    if (payload_len < 2) return;
+    uint8_t pin = payload[0];
+    uint8_t val = payload[1];
+    hw_gpio_write(pin, val);
+
+    uint8_t ack_buf[64];
+    size_t  ack_len = 0;
+    protocol_build_ack(ack_buf, &ack_len, 0, req_seq);
+    if (ack_len > 0) {
+        esp_now_send(src_mac, ack_buf, ack_len);
+    }
+}
+
+// ====================================================================
+// sensor_recv_cb — runs in rx_task context; enqueues only (non-blocking)
+//
+// This callback must return quickly.  All sensor reads and ESP-NOW
+// replies are delegated to cmd_task via s_cmd_queue.
 // ====================================================================
 
 static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                             const uint8_t* data, int len)
 {
-    uint8_t req_seq = 0;
-    if (len >= MSG_HEADER_SIZE) {
-        req_seq = ((const MsgHeader*)data)->seq_id;
+    // Only handle DATA_REQ and CMD messages.
+    // MSG_ANNOUNCE from master is not used in the current protocol;
+    // master never broadcasts ANNOUNCE, so this case never fires.
+    if (msg_type != MSG_DATA_REQ && msg_type != MSG_CMD) {
+        return;
     }
 
-    // Ensure peer is added to ESP-NOW so unicast esp_now_send succeeds
+    // Register sender as an ESP-NOW peer so esp_now_send() can reply.
     if (!esp_now_is_peer_exist(src_mac)) {
         esp_now_peer_info_t peerInfo = {};
         peerInfo.channel = 0;
@@ -301,163 +414,60 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
         esp_now_add_peer(&peerInfo);
     }
 
-    switch (msg_type) {
+    // Build a minimal queued command (avoid copying full 250-byte packet).
+    SensorCmd cmd = {};
+    memcpy(cmd.src_mac, src_mac, 6);
+    cmd.msg_type = msg_type;
+    cmd.req_seq  = (len >= (int)MSG_HEADER_SIZE)
+                   ? ((const MsgHeader*)data)->seq_id : 0;
 
-    case MSG_DATA_REQ: {
-#if USE_SENSOR_JW01
-        static bool init_done = false;
-        if (!init_done) {
-            jw01_init();
-            init_done = true;
+    if (msg_type == MSG_CMD) {
+        // Extract payload (strip the 7-byte header).
+        int poff = (int)MSG_HEADER_SIZE;
+        int plen = len - poff;
+        if (plen > 0 && plen <= (int)sizeof(cmd.payload)) {
+            memcpy(cmd.payload, data + poff, (size_t)plen);
+            cmd.payload_len = plen;
         }
-
-        double values[3] = {0.0, 0.0, 0.0};
-        double co2 = 0.0, tvoc = 0.0, ch2o = 0.0;
-
-        if (jw01_read(&co2, &tvoc, &ch2o)) {
-            values[0] = co2;
-            values[1] = tvoc;
-            values[2] = ch2o;
-        }
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, 3);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#elif USE_SENSOR_BH1750
-        static bool init_done = false;
-        if (!init_done) {
-            bh1750_init();
-            init_done = true;
-        }
-
-        double values[1] = {0.0};
-        values[0] = bh1750_read();
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, 1);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#elif USE_SENSOR_RAINDROP
-        static bool init_done = false;
-        if (!init_done) {
-            raindrop_init();
-            init_done = true;
-        }
-
-        double values[1] = {0.0};
-        values[0] = raindrop_read();
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, 1);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#elif USE_SENSOR_VIBRATION
-        static bool init_done = false;
-        if (!init_done) {
-            vibration_init();
-            init_done = true;
-        }
-
-        double values[1] = {0.0};
-        values[0] = vibration_read();
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, 1);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#elif USE_SENSOR_DHT11
-        double values[2] = {0.0, 0.0};
-        double temp = 0.0, hum = 0.0;
-
-        if (dht11_read(&temp, &hum)) {
-            values[0] = temp;
-            values[1] = hum;
-        }
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, 2);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#else
-        // Read ALL local sensor pins and pack them into a structured response.
-        #define SENSOR_ADC_PINS    {4, 5, 6}
-        #define SENSOR_ADC_COUNT  3
-
-        static const uint8_t s_adc_pins[SENSOR_ADC_COUNT] = SENSOR_ADC_PINS;
-        double values[SENSOR_ADC_COUNT];
-
-        for (int i = 0; i < SENSOR_ADC_COUNT; i++) {
-            values[i] = (double)hw_adc_read(s_adc_pins[i]);
-        }
-
-        uint8_t resp_buf[128];
-        size_t  resp_len = 0;
-        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
-                                  values, SENSOR_ADC_COUNT);
-
-        if (resp_len > 0) {
-            esp_now_send(src_mac, resp_buf, resp_len);
-        }
-#endif
-        break;
     }
 
-    case MSG_ANNOUNCE: {
-        if (len >= MSG_HEADER_SIZE + 1) {
-            const char* ann_name = (const char*)(data + MSG_HEADER_SIZE);
-            if (strncmp(ann_name, "master", 6) == 0) {
-                espnow_comm_send_announce();
-            }
-        }
-        break;
-    }
-
-    case MSG_CMD: {
-        if (len < MSG_HEADER_SIZE + 2) break;
-        uint8_t pin = data[MSG_HEADER_SIZE];
-        uint8_t val = data[MSG_HEADER_SIZE + 1];
-        hw_gpio_write(pin, val);
-
-        // Send ACK
-        {
-            uint8_t ack_buf[64];
-            size_t ack_len = 0;
-            protocol_build_ack(ack_buf, &ack_len, 0, req_seq);
-            if (ack_len > 0) {
-                esp_now_send(src_mac, ack_buf, ack_len);
-            }
-        }
-        break;
-    }
-
-    default:
-        break;
+    // Non-blocking enqueue; drop if the queue is full.
+    if (s_cmd_queue == NULL ||
+        xQueueSend(s_cmd_queue, &cmd, 0) != pdTRUE) {
+        ESP_LOGW("sensor", "cmd queue full, dropping msg_type=0x%02x",
+                 msg_type);
     }
 }
 
 // ====================================================================
-// Announce task — sends periodic broadcast announces
+// cmd_task — dequeues SensorCmd and handles sensor reads / GPIO ops.
+// Running as a dedicated task means blocking I/O does not stall rx_task.
+// ====================================================================
+
+static void cmd_task(void* arg)
+{
+    (void)arg;
+    SensorCmd cmd;
+    while (1) {
+        if (xQueueReceive(s_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        switch (cmd.msg_type) {
+        case MSG_DATA_REQ:
+            handle_data_req(cmd.src_mac, cmd.req_seq);
+            break;
+        case MSG_CMD:
+            handle_cmd(cmd.src_mac, cmd.req_seq,
+                       cmd.payload, cmd.payload_len);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+// ====================================================================
+// announce_task — sends periodic broadcast announces with jitter
 // ====================================================================
 
 static void announce_task(void* arg)
@@ -494,7 +504,6 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // ---- Initialize WiFi and ESP-NOW ----
-    // espnow_comm_init() safely handles all wifi netif, event loops, and wifi_init setup
     ESP_ERROR_CHECK(espnow_comm_init());
 
     // ---- Set module name + capability (used in announce) ----
@@ -506,18 +515,54 @@ extern "C" void app_main(void)
             sizeof(g_espnow_module_capability));
     g_espnow_module_capability[sizeof(g_espnow_module_capability) - 1] = '\0';
 
-    // ---- Register receive callback ----
+    // ---- Initialize sensor hardware once at startup ----
+    // Previously done lazily inside recv_cb (static bool init_done),
+    // which caused the first DATA_REQ to always return zeros and made
+    // uart_driver_install() run in rx_task context.
+#if USE_SENSOR_JW01
+    jw01_init();
+    // Allow JW01 to send its first UART frame before the first DATA_REQ.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    printf("JW01 initialized\n");
+#elif USE_SENSOR_BH1750
+    bh1750_init();
+    printf("BH1750 initialized\n");
+#elif USE_SENSOR_VIBRATION
+    vibration_init();
+    printf("Vibration sensor initialized\n");
+#elif USE_SENSOR_RAINDROP
+    raindrop_init();
+    printf("Raindrop sensor initialized\n");
+#endif
+    // DHT11 and generic ADC need no explicit pre-initialization.
+
+    // ---- Create command processing queue ----
+    s_cmd_queue = xQueueCreate(SENSOR_CMD_QUEUE_LEN, sizeof(SensorCmd));
+    if (s_cmd_queue == NULL) {
+        printf("ERROR: Failed to create cmd queue — halting\n");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // ---- Register receive callback AFTER queue is ready ----
+    // Packets arriving before this point are silently ignored by rx_task
+    // (no callback registered), which is the safe default.
     espnow_comm_register_recv_callback(sensor_recv_cb);
 
+    // ---- Create cmd_task (handles DATA_REQ and CMD out of queue) ----
+    BaseType_t tsk = xTaskCreate(cmd_task, "sensor_cmd",
+                                  3072, NULL, 4, NULL);
+    if (tsk != pdPASS) {
+        printf("ERROR: Failed to create cmd_task\n");
+    }
+
     // ---- Create announce task ----
-    BaseType_t tsk = xTaskCreate(announce_task, "announce",
-                                  2048, NULL, 5, NULL);
+    tsk = xTaskCreate(announce_task, "announce",
+                      2048, NULL, 5, NULL);
     if (tsk != pdPASS) {
         printf("ERROR: Failed to create announce task\n");
     }
 
-    printf("Sensor ready — name=%s\n",
-           g_espnow_module_name);
+    printf("Sensor ready — name=%s\n", g_espnow_module_name);
 
     // ---- Main loop ----
     while (1) {

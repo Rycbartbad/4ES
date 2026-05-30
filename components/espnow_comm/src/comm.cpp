@@ -335,11 +335,14 @@ static void espnow_recv_cb(const esp_now_recv_info_t* info,
     memcpy(item.data, data, (size_t)len);
     item.len = len;
 
-    // Push to queue (non-blocking; drop if full)
-    BaseType_t woke = pdFALSE;
-    xQueueSendFromISR(s_rx_queue, &item, &woke);
-    // No yield needed — our task is same or lower priority
-    (void)woke;
+    // Push to queue (non-blocking; drop if full).
+    // espnow_recv_cb runs in Wi-Fi task context (NOT an ISR), so use the
+    // normal xQueueSend (timeout=0) rather than the ISR variant.
+    BaseType_t ok = xQueueSend(s_rx_queue, &item, 0);
+    if (ok != pdTRUE) {
+        ESP_LOGW(TAG, "rx queue full, packet from " MACSTR " dropped",
+                 MAC2STR(info->src_addr));
+    }
 }
 
 // ----------------------------------------------------------------
