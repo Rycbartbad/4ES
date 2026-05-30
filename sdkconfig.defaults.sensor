@@ -12,3 +12,8 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # Module name announced to the master.
 CONFIG_SENSOR_MODULE_NAME="doorbell"
+
+# Spread ESP-NOW announce broadcasts when multiple doorbell sensors power up
+# together, reducing broadcast collisions on the shared channel.
+CONFIG_ANNOUNCE_STARTUP_JITTER_MS=3000
+CONFIG_ANNOUNCE_JITTER_MS=1000

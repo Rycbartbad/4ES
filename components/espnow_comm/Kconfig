@@ -16,6 +16,14 @@ config ANNOUNCE_JITTER_MS
         Random jitter added to announce interval to prevent
         collision when multiple devices power on simultaneously.
 
+config ANNOUNCE_STARTUP_JITTER_MS
+    int "Initial announce random delay (ms)"
+    default 3000
+    range 0 10000
+    help
+        Random startup delay before the first announce. This keeps multiple
+        sensors powered on together from broadcasting in lockstep.
+
 config PEER_TIMEOUT_MS
     int "Peer timeout before OFFLINE (ms)"
     default 10000

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +31,7 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_random.h"
 
 #include "espnow_comm/comm.h"
 #include "espnow_comm/protocol.h"
@@ -42,6 +44,14 @@
 
 #ifndef CONFIG_ANNOUNCE_INTERVAL_MS
 #define CONFIG_ANNOUNCE_INTERVAL_MS 3000
+#endif
+
+#ifndef CONFIG_ANNOUNCE_JITTER_MS
+#define CONFIG_ANNOUNCE_JITTER_MS 200
+#endif
+
+#ifndef CONFIG_ANNOUNCE_STARTUP_JITTER_MS
+#define CONFIG_ANNOUNCE_STARTUP_JITTER_MS 3000
 #endif
 
 // ====================================================================
@@ -595,9 +605,28 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
 static void announce_task(void* arg)
 {
     (void)arg;
+
+#if CONFIG_ANNOUNCE_STARTUP_JITTER_MS > 0
+    uint32_t startup_delay_ms =
+        esp_random() % (CONFIG_ANNOUNCE_STARTUP_JITTER_MS + 1);
+    printf("Announce startup delay=%u ms\n", (unsigned)startup_delay_ms);
+    vTaskDelay(pdMS_TO_TICKS(startup_delay_ms));
+#endif
+
     while (1) {
         espnow_comm_send_announce();
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_ANNOUNCE_INTERVAL_MS));
+
+        int delay_ms = CONFIG_ANNOUNCE_INTERVAL_MS;
+#if CONFIG_ANNOUNCE_JITTER_MS > 0
+        int jitter_span = CONFIG_ANNOUNCE_JITTER_MS * 2 + 1;
+        int jitter_ms = (int)(esp_random() % jitter_span) -
+                        CONFIG_ANNOUNCE_JITTER_MS;
+        delay_ms += jitter_ms;
+        if (delay_ms < 1000) {
+            delay_ms = 1000;
+        }
+#endif
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
