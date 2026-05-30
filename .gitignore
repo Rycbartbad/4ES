@@ -16,6 +16,9 @@
 # Log files
 *.log
 
+# Local ESP-IDF path override (see scripts/idf.local.ps1.example)
+scripts/idf.local.ps1
+
 # Build artifacts and directories
 **/build/
 build/

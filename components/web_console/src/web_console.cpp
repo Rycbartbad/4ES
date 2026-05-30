@@ -46,6 +46,7 @@ extern void (*g_print_callback)(const char* str, int len);
 #include "cJSON.h"
 
 #include "espnow_comm/peer_mgr.h"
+#include "espnow_comm/comm.h"
 
 // ====================================================================
 // Log tag
@@ -496,12 +497,14 @@ static void inactivity_timer_cb(TimerHandle_t xTimer)
         s_server = NULL;
     }
 
-    // Stop SoftAP
+    // Stop SoftAP HTTP only — keep Wi-Fi / ESP-NOW running (pure STA mode
+    // breaks broadcast reception on ESP32-S3/C3, and esp_wifi_stop() kills
+    // ESP-NOW entirely until the next reboot).
     if (s_ap_netif) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
-        esp_wifi_stop();
         esp_netif_destroy(s_ap_netif);
         s_ap_netif = NULL;
+        espnow_comm_sync_rf();
+        espnow_comm_send_discovery();
     }
 }
 
@@ -1146,6 +1149,12 @@ static esp_err_t start_softap(void)
 
     ESP_LOGI(TAG, "SoftAP started: ESP-LEGO-Setup (channel %d)",
              CONFIG_SOFTAP_CHANNEL);
+
+    // SoftAP start can change the primary channel; re-sync ESP-NOW and
+    // prompt already-running sensors to announce immediately.
+    espnow_comm_sync_rf();
+    espnow_comm_send_discovery();
+
     return ESP_OK;
 }
 

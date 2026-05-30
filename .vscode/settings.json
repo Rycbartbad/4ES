@@ -1,13 +1,14 @@
 {
-  "idf.currentSetup": "d:\\IDF_v5.2.6\\v5.2.6\\esp-idf",
+  "idf.currentSetup": "D:\\idf5_2\\v5.2.6\\esp-idf",
+  "idf.toolsPathWin": "D:\\idf5_2_tools",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "COM6",
+  "idf.portWin": "COM62",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
-  "clangd.path": "d:\\IDF_v5.2.6\\TOOLS_PATH\\tools\\esp-clang\\16.0.1-fe4f10a809\\esp-clang\\bin\\clangd.exe",
+  "clangd.path": "D:\\idf5_2_tools\\tools\\esp-clang\\16.0.1-fe4f10a809\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",

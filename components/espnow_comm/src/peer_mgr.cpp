@@ -136,7 +136,8 @@ uint8_t peer_mgr_handle_announce(const uint8_t* mac, const char* name, const cha
     // 4. Register MAC in ESP-NOW underlying layer to permit unicast messages
     if (!esp_now_is_peer_exist(mac)) {
         esp_now_peer_info_t peerInfo = {};
-        peerInfo.channel = 0; // Use current channel
+        peerInfo.channel = 0;
+        peerInfo.ifidx   = WIFI_IF_STA;
         peerInfo.encrypt = false;
         memcpy(peerInfo.peer_addr, mac, 6);
         esp_now_add_peer(&peerInfo);
@@ -223,7 +224,8 @@ int peer_mgr_insert(const uint8_t* mac, uint8_t module_id, const char* name)
     // 3. Register MAC in ESP-NOW underlying layer for unicast send
     if (!esp_now_is_peer_exist(mac)) {
         esp_now_peer_info_t peerInfo = {};
-        peerInfo.channel = 0; // Use current channel
+        peerInfo.channel = 0;
+        peerInfo.ifidx   = WIFI_IF_STA;
         peerInfo.encrypt = false;
         memcpy(peerInfo.peer_addr, mac, 6);
         esp_err_t add_ret = esp_now_add_peer(&peerInfo);

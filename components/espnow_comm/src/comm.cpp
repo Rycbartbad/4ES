@@ -180,9 +180,10 @@ esp_err_t espnow_comm_init(void)
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
 
-    // ---- Add broadcast peer (for announce) ----
+    // ---- Add broadcast peer (for announce / discovery) ----
+    // channel=0 follows the current Wi-Fi channel after SoftAP or STA events.
     esp_now_peer_info_t peer = {};
-    peer.channel = channel;
+    peer.channel = 0;
     peer.ifidx   = WIFI_IF_STA;
     peer.encrypt = false;
     memcpy(peer.peer_addr, s_broadcast_mac, 6);
@@ -241,6 +242,73 @@ esp_err_t espnow_comm_init(void)
 }
 
 // ----------------------------------------------------------------
+// RF sync — restore channel + broadcast peer after Wi-Fi mode changes
+// ----------------------------------------------------------------
+
+static void ensure_broadcast_peer(void)
+{
+    esp_now_peer_info_t peer = {};
+    peer.channel = 0;   // follow current primary channel
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+    memcpy(peer.peer_addr, s_broadcast_mac, 6);
+
+    if (esp_now_is_peer_exist(s_broadcast_mac)) {
+        esp_err_t ret = esp_now_mod_peer(&peer);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "esp_now_mod_peer(broadcast) failed: %d", ret);
+        }
+    } else {
+        esp_err_t ret = esp_now_add_peer(&peer);
+        if (ret != ESP_OK && ret != ESP_ERR_ESPNOW_EXIST) {
+            ESP_LOGW(TAG, "esp_now_add_peer(broadcast) failed: %d", ret);
+        }
+    }
+}
+
+void espnow_comm_sync_rf(void)
+{
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+    uint8_t want_ch = CONFIG_SOFTAP_CHANNEL;
+#else
+    uint8_t want_ch = 1;
+#endif
+
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    esp_err_t err = esp_wifi_set_channel(want_ch, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %d", want_ch, err);
+    }
+
+    ensure_broadcast_peer();
+
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    if (esp_wifi_get_channel(&primary, &second) == ESP_OK) {
+        ESP_LOGI(TAG, "RF synced: primary ch %u (target %u)", primary, want_ch);
+    }
+}
+
+void espnow_comm_send_discovery(void)
+{
+#if CONFIG_DEVICE_ROLE_MASTER
+    uint8_t buf[250];
+    size_t  len = 0;
+
+    protocol_build_announce(buf, &len, "master", "");
+    esp_err_t ret = esp_now_send(s_broadcast_mac, buf, len);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "discovery send failed: %d", ret);
+    } else {
+        ESP_LOGD(TAG, "discovery broadcast sent");
+    }
+#else
+    (void)0;
+#endif
+}
+
+// ----------------------------------------------------------------
 // Suspend / Resume RX (used by wifi_scan — design.md §16.11)
 // ----------------------------------------------------------------
 void espnow_comm_suspend_rx(void)
@@ -259,6 +327,7 @@ void espnow_comm_resume_rx(void)
     if (s_rx_task_handle != NULL) {
         vTaskResume(s_rx_task_handle);
     }
+    espnow_comm_sync_rf();
 }
 
 void espnow_comm_deinit(void)

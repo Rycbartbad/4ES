@@ -128,6 +128,7 @@ static void on_script_end(void) {
 static void shell_task(void* pv);
 static void timeout_task(void* pv);
 static void exec_task(void* pv);
+static void discovery_task(void* pv);
 
 // ====================================================================
 // app_main — master firmware entry point
@@ -211,6 +212,12 @@ extern "C" void app_main(void)
     web_console_init();
 #endif
 
+    // ---- 7. Periodic discovery broadcast (prompts sensors to announce) ----
+    t = xTaskCreate(discovery_task, "discovery", 2048, NULL, 3, NULL);
+    if (t != pdPASS) {
+        ESP_LOGW(TAG, "Failed to create discovery_task");
+    }
+
     ESP_LOGI(TAG, "All tasks created. Ready. Send a script via UART.");
 
     // app_main returns — FreeRTOS scheduler keeps tasks running
@@ -245,6 +252,31 @@ static void shell_task(void* pv)
             // fgets returned NULL (EOF or error) — yield briefly
             vTaskDelay(pdMS_TO_TICKS(10));
         }
+    }
+}
+
+// ====================================================================
+// discovery_task — broadcast master discovery to wake up sensors
+//
+// After SoftAP / Wi-Fi scan the RF channel may drift; sensors that were
+// already running will not re-announce unless prompted.  This task sends
+// a lightweight discovery broadcast every few seconds until at least one
+// peer is active, then backs off.
+// ====================================================================
+
+static void discovery_task(void* pv)
+{
+    (void)pv;
+    // Allow web console SoftAP to finish starting.
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    while (1) {
+        espnow_comm_sync_rf();
+        espnow_comm_send_discovery();
+
+        int active = peer_mgr_active_count();
+        int delay_ms = (active == 0) ? 3000 : 15000;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 

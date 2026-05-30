@@ -398,9 +398,20 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
 static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
                             const uint8_t* data, int len)
 {
-    // Only handle DATA_REQ and CMD messages.
-    // MSG_ANNOUNCE from master is not used in the current protocol;
-    // master never broadcasts ANNOUNCE, so this case never fires.
+    // Master discovery: respond with an immediate ANNOUNCE so the master
+    // can register this sensor without requiring a manual reset.
+    if (msg_type == MSG_ANNOUNCE) {
+        char ann_name[32];
+        char ann_cap[CONFIG_MAX_CAPABILITY_LEN];
+        if (protocol_parse_announce(data, len, ann_name, sizeof(ann_name),
+                                    ann_cap, sizeof(ann_cap)) &&
+            strncmp(ann_name, "master", 6) == 0) {
+            espnow_comm_sync_rf();
+            espnow_comm_send_announce();
+        }
+        return;
+    }
+
     if (msg_type != MSG_DATA_REQ && msg_type != MSG_CMD) {
         return;
     }
@@ -409,6 +420,7 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
     if (!esp_now_is_peer_exist(src_mac)) {
         esp_now_peer_info_t peerInfo = {};
         peerInfo.channel = 0;
+        peerInfo.ifidx   = WIFI_IF_STA;
         peerInfo.encrypt = false;
         memcpy(peerInfo.peer_addr, src_mac, 6);
         esp_now_add_peer(&peerInfo);
@@ -467,6 +479,21 @@ static void cmd_task(void* arg)
 }
 
 // ====================================================================
+// sensor_hw_init_task — JW01 warmup without blocking ESP-NOW bring-up
+// ====================================================================
+
+#if USE_SENSOR_JW01
+static void sensor_hw_init_task(void* arg)
+{
+    (void)arg;
+    jw01_init();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    printf("JW01 initialized\n");
+    vTaskDelete(NULL);
+}
+#endif
+
+// ====================================================================
 // announce_task — sends periodic broadcast announces with jitter
 // ====================================================================
 
@@ -515,27 +542,6 @@ extern "C" void app_main(void)
             sizeof(g_espnow_module_capability));
     g_espnow_module_capability[sizeof(g_espnow_module_capability) - 1] = '\0';
 
-    // ---- Initialize sensor hardware once at startup ----
-    // Previously done lazily inside recv_cb (static bool init_done),
-    // which caused the first DATA_REQ to always return zeros and made
-    // uart_driver_install() run in rx_task context.
-#if USE_SENSOR_JW01
-    jw01_init();
-    // Allow JW01 to send its first UART frame before the first DATA_REQ.
-    vTaskDelay(pdMS_TO_TICKS(500));
-    printf("JW01 initialized\n");
-#elif USE_SENSOR_BH1750
-    bh1750_init();
-    printf("BH1750 initialized\n");
-#elif USE_SENSOR_VIBRATION
-    vibration_init();
-    printf("Vibration sensor initialized\n");
-#elif USE_SENSOR_RAINDROP
-    raindrop_init();
-    printf("Raindrop sensor initialized\n");
-#endif
-    // DHT11 and generic ADC need no explicit pre-initialization.
-
     // ---- Create command processing queue ----
     s_cmd_queue = xQueueCreate(SENSOR_CMD_QUEUE_LEN, sizeof(SensorCmd));
     if (s_cmd_queue == NULL) {
@@ -561,6 +567,27 @@ extern "C" void app_main(void)
     if (tsk != pdPASS) {
         printf("ERROR: Failed to create announce task\n");
     }
+
+    // Announce immediately so a master that booted earlier can discover us
+    // without waiting for the first periodic interval or a manual reset.
+    espnow_comm_send_announce();
+
+    // ---- Sensor hardware init (non-blocking for ESP-NOW) ----
+#if USE_SENSOR_JW01
+    tsk = xTaskCreate(sensor_hw_init_task, "jw01_init", 2048, NULL, 3, NULL);
+    if (tsk != pdPASS) {
+        printf("WARN: JW01 init task failed — sensor reads may be zero\n");
+    }
+#elif USE_SENSOR_BH1750
+    bh1750_init();
+    printf("BH1750 initialized\n");
+#elif USE_SENSOR_VIBRATION
+    vibration_init();
+    printf("Vibration sensor initialized\n");
+#elif USE_SENSOR_RAINDROP
+    raindrop_init();
+    printf("Raindrop sensor initialized\n");
+#endif
 
     printf("Sensor ready — name=%s\n", g_espnow_module_name);
 
