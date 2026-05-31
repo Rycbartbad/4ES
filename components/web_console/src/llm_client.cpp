@@ -45,6 +45,8 @@
 #include "cJSON.h"
 
 #include "espnow_comm/peer_mgr.h"
+#include "espnow_comm/comm.h"
+#include "esp_now.h"
 
 // ====================================================================
 // Log tag
@@ -145,7 +147,7 @@ static void set_softap_default_netif(void)
     }
 }
 
-static void restore_espnow_channel(void)
+static bool restore_espnow_channel(void)
 {
 #if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
     const uint8_t channel = CONFIG_SOFTAP_CHANNEL;
@@ -153,25 +155,51 @@ static void restore_espnow_channel(void)
     const uint8_t channel = 1;
 #endif
 
+    // 1. Disconnect STA
     esp_err_t ret = esp_wifi_disconnect();
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT) {
-        ESP_LOGW(TAG, "STA disconnect before ESP-NOW restore failed: %d", ret);
+        ESP_LOGW(TAG, "STA disconnect before WiFi restart failed: %d", ret);
     }
     s_sta_connected = false;
-    vTaskDelay(pdMS_TO_TICKS(300));
 
-    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    // 2. Deinit ESP-NOW (must be done before stopping WiFi)
+    esp_now_deinit();
+
+    // 3. Stop WiFi completely — forces a clean restart below
+    ret = esp_wifi_stop();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "restore APSTA mode failed: %d", ret);
+        ESP_LOGW(TAG, "esp_wifi_stop failed: %d", ret);
     }
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    vTaskDelay(pdMS_TO_TICKS(500));
 
+    // 4. Restart WiFi
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %d", ret);
+        return false;
+    }
+
+    // 5. Set APSTA mode and channel — fresh start, no state-machine conflicts
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_set_ps(WIFI_PS_NONE);
     ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "restore ESP-NOW channel %u failed: %d", channel, ret);
-    } else {
-        ESP_LOGI(TAG, "restored ESP-NOW channel %u after LLM call", channel);
+        ESP_LOGE(TAG, "set channel %u after wifi restart failed: %d", channel, ret);
+        return false;
     }
+
+    // 6. Re-init ESP-NOW (callbacks + broadcast peer)
+    ret = espnow_comm_reinit_espnow();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "espnow_comm_reinit_espnow failed: %d", ret);
+        return false;
+    }
+
+    // 7. Re-add all active peers to the ESP-NOW table
+    peer_mgr_espnow_readd_all();
+
+    ESP_LOGI(TAG, "WiFi restarted on channel %u, ESP-NOW re-initialised", channel);
+    return true;
 }
 
 static void finish_llm_network(bool local_proxy_mode)
@@ -180,7 +208,30 @@ static void finish_llm_network(bool local_proxy_mode)
         set_softap_default_netif();
         return;
     }
-    restore_espnow_channel();
+    bool channel_ok = restore_espnow_channel();
+
+    // Resume ESP-NOW rx and peer aging — suspended before channel switch.
+    // Always resume even if channel restore failed — otherwise the tasks
+    // stay suspended forever.  If the channel is wrong, peers will time
+    // out and re-announce when the channel eventually recovers.
+    {
+        volatile TaskHandle_t* h = script_inject_get_timeout_task_handle();
+        TaskHandle_t timeout_task = (h != NULL) ? *h : NULL;
+        if (timeout_task != NULL) {
+            vTaskResume(timeout_task);
+        }
+    }
+    espnow_comm_resume_rx();
+
+    // Give announces time to arrive and refresh last_seen before the
+    // caller injects the generated script.  Without this, the first
+    // espnow_comm_send_cmd() after restart may race against rx_task
+    // and send to a peer that was just re-added but hasn't been seen yet.
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (!channel_ok) {
+        ESP_LOGE(TAG, "ESP-NOW channel NOT restored — sensor commands will fail");
+    }
 }
 
 // ====================================================================
@@ -459,14 +510,19 @@ static int build_system_prompt(char* buf, int max_len)
         "- peer_count() -> number       number of currently online peer devices\n"
         "- peer_online(id) -> bool      check if peer id/name is online\n"
         "- remote_read(id)->num|list  read sensor data from remote module (id=number or name; returns single number for 1-sensor modules, or a list for multi-sensor modules; submodule firmware decides which pins to read)\n"
-        "- espnow_send(id,cmd,pl...)->void  send custom command to remote module (cmd=0x0001-0xFFFF, payload=bytes; reading sensors uses remote_read() not espnow_send)\n"
-        "- list_new(size) -> list       create a list with N slots (pool allocated)\n"
-        "- list_get(lst,i) -> number    get element at index i (0-based) from list\n"
-        "- list_set(lst,i,v) -> void    set element at index i in list to value v\n"
-        "- list_len(lst) -> number      number of elements in list\n"
         "- remote_read_avg(ids)->num    read multiple remote sensors, return average (ids=comma-separated string like \"1,2,3\")\n"
         "- remote_read_max(ids)->num    read multiple remotes, return max value\n"
         "- remote_read_min(ids)->num    read multiple remotes, return min value\n"
+        "- list_get(lst,i) -> number    get element at index i (0-based) from list\n"
+        "- list_len(lst) -> number      number of elements in list\n\n"
+        "CRITICAL — sensor data handling:\n"
+        "- remote_read() may return a LIST (multiple sensor values) or a single NUMBER.\n"
+        "- For single-value sensors: you can use the return value directly, e.g. var t = remote_read(1); if (t > 30) { ... }\n"
+        "- For multi-value sensors (most sensors): remote_read returns a LIST. You MUST use list_get() to extract each value.\n"
+        "- Example correct: var readings = remote_read(\"sensor\"); var rain = list_get(readings, 0); if (rain == 1) { buzzer_beep(\"doorbell\", 3); }\n"
+        "- Example WRONG: var rain = remote_read(\"sensor\"); if (rain == 1) { ... }  ← this compares a list to a number, always false!\n"
+        "- Prefer remote_read_avg(id) when you only need a single representative value — it always returns a number, never a list.\n"
+        "- ALWAYS check list_len() if you don't know how many values the sensor returns.\n\n"
         "- read_sensor(pin) -> number   read LOCAL analog sensor (ADC pin), returns 0-4095\n"
         "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
         "- mic_level() -> number        local INMP441 microphone level, 0-100\n"
@@ -519,7 +575,7 @@ static int build_system_prompt(char* buf, int max_len)
     // Resource limits
     pos += snprintf(buf + pos, (size_t)(max_len - pos),
         "Resource limits:\n"
-        "- Max 20 remote_read() calls per script\n"
+        "- Max 5000 remote_read() calls per script\n"
         "- Max 10000 loop iterations\n"
         "- Max 50000 statements\n"
         "- Generate ONLY valid script code, no explanations.\n"
@@ -609,6 +665,19 @@ int llm_client_call(const char* ssid, const char* pass,
         esp_wifi_set_ps(WIFI_PS_NONE);
         set_softap_default_netif();
     } else {
+    // Suspend ESP-NOW rx and peer aging before channel switches to STA.
+    // The single radio moves off the ESP-NOW SoftAP channel during the
+    // LLM call; suspending the timeout task prevents peers from being
+    // falsely aged to OFFLINE while announces cannot be received.
+    espnow_comm_suspend_rx();
+    {
+        volatile TaskHandle_t* h = script_inject_get_timeout_task_handle();
+        TaskHandle_t timeout_task = (h != NULL) ? *h : NULL;
+        if (timeout_task != NULL) {
+            vTaskSuspend(timeout_task);
+        }
+    }
+
     // Ensure STA is connected.
     // Probe the real driver state — this catches auto-reconnects that
     // happened outside our code (e.g. after a temporary signal drop).

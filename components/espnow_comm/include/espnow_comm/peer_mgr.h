@@ -65,6 +65,11 @@ void peer_mgr_age_scan(TickType_t now);
 void peer_mgr_set_pending(PeerEntry* entry);
 bool peer_mgr_is_duplicate(PeerEntry* entry, uint8_t seq_id);
 
+// Re-add all ACTIVE peers to the ESP-NOW peer table.
+// Call after esp_wifi_stop()/esp_wifi_start() cycle which clears the
+// ESP-NOW internal peer list.
+void peer_mgr_espnow_readd_all(void);
+
 #ifdef __cplusplus
 }
 #endif

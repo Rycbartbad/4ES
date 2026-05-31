@@ -670,3 +670,47 @@ bool peer_mgr_is_duplicate(PeerEntry* entry, uint8_t seq_id)
     PEER_UNLOCK();
     return false;
 }
+
+// ------------------------------------------------------------------
+// ESP-NOW peer re-add (after WiFi stop/start cycle)
+// ------------------------------------------------------------------
+void peer_mgr_espnow_readd_all(void)
+{
+    for (int i = 0; i < MAX_PEERS; i++) {
+        PEER_LOCK();
+        if (ENTRY_IS_EMPTY(&s_peers[i])) {
+            PEER_UNLOCK();
+            continue;
+        }
+        PeerEntry* e = &s_peers[i];
+        if (e->state != PEER_ACTIVE) {
+            PEER_UNLOCK();
+            continue;
+        }
+
+        // Re-add to ESP-NOW internal table
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, e->mac, 6);
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+        peer.channel = CONFIG_SOFTAP_CHANNEL;
+#else
+        peer.channel = 1;
+#endif
+        peer.ifidx = WIFI_IF_STA;
+        peer.encrypt = false;
+
+        esp_err_t ret = esp_now_add_peer(&peer);
+        if (ret == ESP_OK) {
+            // Reset last_seen to now so the peer doesn't immediately
+            // timeout when aging resumes after WiFi restart.
+            e->last_seen = xTaskGetTickCount();
+            ESP_LOGI(TAG, "re-added ESP-NOW peer %s channel %u",
+                     e->peer_id, (unsigned)peer.channel);
+        } else if (ret != ESP_ERR_ESPNOW_EXIST) {
+            ESP_LOGW(TAG, "re-add peer %s failed: %d", e->peer_id, ret);
+        }
+        PEER_UNLOCK();
+    }
+
+    ESP_LOGI(TAG, "ESP-NOW peer re-add complete, %d active", peer_mgr_active_count());
+}

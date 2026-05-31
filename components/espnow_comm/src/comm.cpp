@@ -302,6 +302,53 @@ void espnow_comm_resume_rx(void)
     }
 }
 
+// ----------------------------------------------------------------
+// Re-init ESP-NOW layer after WiFi stop/start cycle
+// ----------------------------------------------------------------
+esp_err_t espnow_comm_reinit_espnow(void)
+{
+    esp_err_t ret = esp_now_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_now_init after wifi restart failed: %d", ret);
+        return ret;
+    }
+
+    ret = esp_now_register_send_cb(espnow_send_cb);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_now_register_send_cb failed: %d", ret);
+        return ret;
+    }
+    ret = esp_now_register_recv_cb(espnow_recv_cb);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_now_register_recv_cb failed: %d", ret);
+        return ret;
+    }
+
+    // Re-add broadcast peer
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+    uint8_t channel = CONFIG_SOFTAP_CHANNEL;
+#else
+    uint8_t channel = 1;
+#endif
+    esp_now_peer_info_t peer = {};
+    peer.channel = channel;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+    memcpy(peer.peer_addr, s_broadcast_mac, 6);
+    ret = esp_now_add_peer(&peer);
+    if (ret != ESP_OK && ret != ESP_ERR_ESPNOW_EXIST) {
+        ESP_LOGW(TAG, "re-add broadcast peer failed: %d", ret);
+    }
+
+    // Reset rx queue (discard stale packets)
+    if (s_rx_queue != NULL) {
+        xQueueReset(s_rx_queue);
+    }
+
+    ESP_LOGI(TAG, "ESP-NOW re-initialised after wifi restart");
+    return ESP_OK;
+}
+
 void espnow_comm_deinit(void)
 {
     // Stop the RX task first
