@@ -301,6 +301,12 @@ esp_err_t ui_lvgl_init(void)
 
     s_started = true;
     s_running = true;
+
+    // Register sensor read callback so read_sensor() in scripts
+    // returns the same cached values shown on the LCD.
+    extern int (*g_sensor_read_callback)(uint8_t module_id, double* out, int max);
+    g_sensor_read_callback = ui_lvgl_copy_sensor_values;
+
     ESP_LOGI(TAG, "LVGL sensor status UI started");
     return ESP_OK;
 }

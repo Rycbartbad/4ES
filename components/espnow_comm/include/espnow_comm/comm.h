@@ -47,12 +47,10 @@ extern char    g_espnow_module_capability[CONFIG_MAX_CAPABILITY_LEN];
 void espnow_comm_suspend_rx(void);
 void espnow_comm_resume_rx(void);
 
-// Re-lock Wi-Fi channel + ESP-NOW broadcast peer after SoftAP / Wi-Fi scan /
-// STA connect.  Call after any operation that may change the RF channel.
-void espnow_comm_sync_rf(void);
-
-// Master → broadcast: prompts sensors to send an immediate ANNOUNCE (master only).
-void espnow_comm_send_discovery(void);
+// Re-initialise ESP-NOW layer after WiFi stop/start cycle.
+// Re-registers callbacks, re-adds broadcast peer.
+// Call after esp_wifi_start() + esp_wifi_set_channel().
+esp_err_t espnow_comm_reinit_espnow(void);
 
 #ifdef __cplusplus
 }

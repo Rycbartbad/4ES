@@ -2,8 +2,8 @@ menu "ESP-LEGO ESP-NOW Comm"
 
 config ANNOUNCE_INTERVAL_MS
     int "Announce broadcast interval (ms)"
-    default 3000
-    range 1000 30000
+    default 1800
+    range 500 30000
     help
         Interval between peer announcement broadcasts.
         Shorter = faster discovery, more airtime usage.
@@ -18,7 +18,7 @@ config ANNOUNCE_JITTER_MS
 
 config PEER_TIMEOUT_MS
     int "Peer timeout before OFFLINE (ms)"
-    default 10000
+    default 6000
     range 2000 60000
     help
         If no announce received from a peer within this time,
@@ -42,7 +42,7 @@ config MAX_PEERS
 
 config READ_TIMEOUT_MS
     int "Sync request timeout (ms)"
-    default 200
+    default 800
     range 50 2000
     help
         Timeout for a single synchronous read request.

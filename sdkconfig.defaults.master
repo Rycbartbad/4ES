@@ -5,9 +5,28 @@ CONFIG_DEVICE_ROLE_MASTER=y
 # Web Console (master only, useful for configuration + LLM)
 CONFIG_WEB_CONSOLE_ENABLED=y
 
+# Use the ESP32-S3 native USB Serial/JTAG port for logs and script stdin.
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 # Master firmware with LCD + touch + interpreter is ~1.05MB;
 # need the large (1500K) app partition instead of default 1M.
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Leave enough descriptors for the web console accept socket, control socket,
+# and a few browser refresh connections.
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
-CONFIG_WEB_CONSOLE_ENABLED=y
+
+# ESP-NOW read responses can arrive a few hundred ms after refresh traffic
+# starts, especially while the web UI is polling. Keep the peer online across
+# occasional missed announces.
+CONFIG_READ_TIMEOUT_MS=800
+CONFIG_PEER_TIMEOUT_MS=20000
+
+# Current ESP32-S3 module reports 8MB flash. Match the image header to the
+# real chip size to avoid the boot-time flash-size warning.
+# CONFIG_ESPTOOLPY_FLASHSIZE_2MB is not set
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"

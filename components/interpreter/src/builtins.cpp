@@ -5,16 +5,18 @@
  *
  * ESP-LEGO V1.0 — Built-in functions (P6)
  *
- * 21 builtins registered into the global environment:
+ * 27 builtins registered into the global environment:
  *
  *   GPIO/ADC/PWM:      digital_read, digital_write, analog_read, analog_write
  *   Timing:            sleep
  *   I/O:               print
  *   ESP-NOW peer mgr:  list_peers, peer_count, peer_online
  *   ESP-NOW comm:      remote_read, espnow_send
+ *   Remote buzzer:     buzzer_beep, buzzer_note, buzzer_song
+ *   Remote servo:      servo_write, servo_sweep
  *   List ops:          list_new, list_get, list_set, list_len, list_free
  *   Aggregation:       remote_read_avg, remote_read_max, remote_read_min
- *   Sensor aliases:    read_sensor, send_motor
+ *   Sensor aliases:    read_sensor, send_motor, mic_level
  */
 
 #include "sdkconfig.h"
@@ -40,6 +42,14 @@
 #include "esp_log.h"
 
 static const char* TAG = "builtins";
+
+// Remote sensor firmware buzzer command IDs. Keep these decimal-friendly in
+// prompt examples because the script lexer does not parse 0x hex literals.
+#define BUZZER_CMD_SONG 18
+#define BUZZER_CMD_NOTE 19
+#define BUZZER_NOTE_G5  19
+#define BUZZER_DEFAULT_MS 200
+#define SERVO_CMD_WRITE 32
 
 // ====================================================================
 // Value construction helpers (C++17-safe — no designated initializers)
@@ -97,7 +107,7 @@ typedef struct {
     BuiltinFunc func;
 } BuiltinEntry;
 
-// ---- Forward declarations of all 21 builtin implementations ---------
+// ---- Forward declarations of all builtin implementations -------------
 
 static Value bif_digital_read(Value* args, int n, ExecutionContext* ctx);
 static Value bif_digital_write(Value* args, int n, ExecutionContext* ctx);
@@ -120,6 +130,12 @@ static Value bif_remote_read_min(Value* args, int n, ExecutionContext* ctx);
 static Value bif_list_free_builtin(Value* args, int n, ExecutionContext* ctx);
 static Value bif_read_sensor(Value* args, int n, ExecutionContext* ctx);
 static Value bif_send_motor(Value* args, int n, ExecutionContext* ctx);
+static Value bif_mic_level(Value* args, int n, ExecutionContext* ctx);
+static Value bif_buzzer_beep(Value* args, int n, ExecutionContext* ctx);
+static Value bif_buzzer_note(Value* args, int n, ExecutionContext* ctx);
+static Value bif_buzzer_song(Value* args, int n, ExecutionContext* ctx);
+static Value bif_servo_write(Value* args, int n, ExecutionContext* ctx);
+static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx);
 
 // ---- Registration table ----------------------------------------------
 
@@ -145,9 +161,21 @@ static const BuiltinEntry s_builtin_entries[] = {
     {"list_free",        1, bif_list_free_builtin},
     {"read_sensor",      1, bif_read_sensor},
     {"send_motor",       2, bif_send_motor},
+    {"mic_level",        0, bif_mic_level},
+    {"buzzer_beep",      2, bif_buzzer_beep},
+    {"buzzer_note",      3, bif_buzzer_note},
+    {"buzzer_song",      2, bif_buzzer_song},
+    {"servo_write",      2, bif_servo_write},
+    {"servo_sweep",      5, bif_servo_sweep},
 };
 
 // ---- Persistent FuncObj array for builtins (body = NULL = builtin) ---
+
+// Callback: read cached remote sensor values (LCD sync).
+// Set by ui_lvgl_init(); remains NULL if LCD is not compiled in.
+// Signature: (module_id, out_values, max) → count of values copied.
+extern int (*g_sensor_read_callback)(uint8_t module_id, double* out, int max);
+int (*g_sensor_read_callback)(uint8_t module_id, double* out, int max) = NULL;
 
 static FuncObj s_builtin_funcs[BIF_COUNT];
 static bool    s_builtins_registered = false;
@@ -202,6 +230,41 @@ static bool check_args(const char* func, int arg_count, int required)
     return true;
 }
 
+static bool resolve_module_id_arg(const char* func,
+                                  const Value* arg,
+                                  ExecutionContext* ctx,
+                                  uint8_t* module_id_out)
+{
+    if (!arg || !module_id_out) return false;
+
+    if (arg->type == VAL_NUM) {
+        *module_id_out = (uint8_t)arg->num;
+        return true;
+    }
+
+    if (arg->type == VAL_STR && arg->str) {
+        bool conflict = false;
+        PeerEntry* peer = peer_mgr_find_by_name(arg->str, &conflict);
+        if (conflict) {
+            ESP_LOGW(TAG, "%s(\"%s\"): name conflict detected", func, arg->str);
+#if CONFIG_STRICT_MODE
+            if (ctx) {
+                ctx->constraint_violated = true;
+                ctx->violation_msg       = "Peer name conflict detected";
+            }
+            return false;
+#endif
+        }
+        if (peer) {
+            *module_id_out = peer->module_id;
+            return true;
+        }
+    }
+
+    ESP_LOGW(TAG, "%s(): invalid or unknown module id", func);
+    return false;
+}
+
 // ====================================================================
 // call_builtin_by_name — dispatched by interpreter.cpp
 // ====================================================================
@@ -240,6 +303,12 @@ Value call_builtin_by_name(const char* name, const Value* args,
     if (strcmp(name, "list_free")       == 0) return bif_list_free_builtin(local_args, n, ctx);
     if (strcmp(name, "read_sensor")     == 0) return bif_read_sensor(local_args, n, ctx);
     if (strcmp(name, "send_motor")      == 0) return bif_send_motor(local_args, n, ctx);
+    if (strcmp(name, "mic_level")       == 0) return bif_mic_level(local_args, n, ctx);
+    if (strcmp(name, "buzzer_beep")     == 0) return bif_buzzer_beep(local_args, n, ctx);
+    if (strcmp(name, "buzzer_note")     == 0) return bif_buzzer_note(local_args, n, ctx);
+    if (strcmp(name, "buzzer_song")     == 0) return bif_buzzer_song(local_args, n, ctx);
+    if (strcmp(name, "servo_write")     == 0) return bif_servo_write(local_args, n, ctx);
+    if (strcmp(name, "servo_sweep")     == 0) return bif_servo_sweep(local_args, n, ctx);
 
     // Not found — signal constraint violation
     ctx->constraint_violated = true;
@@ -574,12 +643,15 @@ static Value bif_remote_read(Value* args, int n, ExecutionContext* ctx)
 static Value bif_espnow_send(Value* args, int n, ExecutionContext* ctx)
 {
     (void)ctx;
-    if (!check_args("espnow_send", n, 2) ||
-        args[0].type != VAL_NUM || args[1].type != VAL_NUM) {
+    if (!check_args("espnow_send", n, 2) || args[1].type != VAL_NUM) {
         return bval_num(-1);
     }
 
-    uint8_t  module_id = (uint8_t)args[0].num;
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("espnow_send", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
     uint16_t cmd_id    = (uint16_t)args[1].num;
 
     // Detect module_id conflicts
@@ -775,13 +847,28 @@ static Value bif_list_free_builtin(Value* args, int n, ExecutionContext* ctx)
 }
 
 // ====================================================================
-// 20. read_sensor(pin) — alias for analog_read
+// 20. read_sensor(id_or_name) — read cached remote sensor value (synced with LCD)
 // ====================================================================
 
 static Value bif_read_sensor(Value* args, int n, ExecutionContext* ctx)
 {
-    // Delegates to analog_read
-    return bif_analog_read(args, n, ctx);
+    (void)ctx;
+    if (n < 1) return bval_num(0);
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("read_sensor", &args[0], ctx, &module_id)) {
+        return bval_num(0);
+    }
+
+    if (g_sensor_read_callback != NULL) {
+        double values[16];
+        int count = g_sensor_read_callback(module_id, values, 16);
+        if (count > 0) {
+            return bval_num(values[0]);  // always single value
+        }
+    }
+
+    return bval_num(0);
 }
 
 // ====================================================================
@@ -792,4 +879,201 @@ static Value bif_send_motor(Value* args, int n, ExecutionContext* ctx)
 {
     // Delegates to analog_write
     return bif_analog_write(args, n, ctx);
+}
+
+// ====================================================================
+// 22. mic_level() - INMP441 I2S microphone level, 0..100 percent FS
+// ====================================================================
+
+static Value bif_mic_level(Value* args, int n, ExecutionContext* ctx)
+{
+    (void)args;
+    (void)n;
+    (void)ctx;
+    return bval_num(hw_mic_level());
+}
+
+// ====================================================================
+// 23. buzzer_note(id, note_id, duration_ms) - remote passive buzzer note
+// ====================================================================
+
+static Value bif_buzzer_note(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("buzzer_note", n, 3) ||
+        args[1].type != VAL_NUM || args[2].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("buzzer_note", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int note_id = (int)args[1].num;
+    if (note_id < 0) note_id = 0;
+    if (note_id > 36) note_id = 36;
+
+    int duration_ms = (int)args[2].num;
+    if (duration_ms < 1) duration_ms = 1;
+    if (duration_ms > 5000) duration_ms = 5000;
+
+    uint8_t payload[3] = {
+        (uint8_t)note_id,
+        (uint8_t)((duration_ms >> 8) & 0xff),
+        (uint8_t)(duration_ms & 0xff),
+    };
+    esp_err_t err = espnow_comm_send_cmd(module_id, BUZZER_CMD_NOTE,
+                                         payload, sizeof(payload));
+    return bval_num((double)err);
+}
+
+// ====================================================================
+// 24. buzzer_beep(id, count [, note_id, duration_ms]) - repeated beeps
+// ====================================================================
+
+static Value bif_buzzer_beep(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("buzzer_beep", n, 2) || args[1].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("buzzer_beep", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int count = (int)args[1].num;
+    if (count < 1) count = 1;
+    if (count > 10) count = 10;
+
+    int note_id = BUZZER_NOTE_G5;
+    if (n >= 3 && args[2].type == VAL_NUM) {
+        note_id = (int)args[2].num;
+    }
+    if (note_id < 0) note_id = 0;
+    if (note_id > 36) note_id = 36;
+
+    int duration_ms = BUZZER_DEFAULT_MS;
+    if (n >= 4 && args[3].type == VAL_NUM) {
+        duration_ms = (int)args[3].num;
+    }
+    if (duration_ms < 1) duration_ms = 1;
+    if (duration_ms > 5000) duration_ms = 5000;
+
+    esp_err_t last_err = ESP_OK;
+    uint8_t payload[3] = {
+        (uint8_t)note_id,
+        (uint8_t)((duration_ms >> 8) & 0xff),
+        (uint8_t)(duration_ms & 0xff),
+    };
+
+    for (int i = 0; i < count; i++) {
+        last_err = espnow_comm_send_cmd(module_id, BUZZER_CMD_NOTE,
+                                        payload, sizeof(payload));
+        if (i + 1 < count) {
+            vTaskDelay(pdMS_TO_TICKS(duration_ms + 120));
+        }
+    }
+
+    return bval_num((double)last_err);
+}
+
+// ====================================================================
+// 25. buzzer_song(id, song_index) - remote passive buzzer preset song
+// ====================================================================
+
+static Value bif_buzzer_song(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("buzzer_song", n, 2) || args[1].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("buzzer_song", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int song_index = (int)args[1].num;
+    if (song_index < 0) song_index = 0;
+    if (song_index > 2) song_index = 2;
+
+    uint8_t payload[1] = { (uint8_t)song_index };
+    esp_err_t err = espnow_comm_send_cmd(module_id, BUZZER_CMD_SONG,
+                                         payload, sizeof(payload));
+    return bval_num((double)err);
+}
+
+// ====================================================================
+// 26. servo_write(id, angle) - remote 0-180 degree servo position
+// ====================================================================
+
+static Value bif_servo_write(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("servo_write", n, 2) || args[1].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("servo_write", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int angle = (int)args[1].num;
+    if (angle < 0) angle = 0;
+    if (angle > 180) angle = 180;
+
+    uint8_t payload[1] = { (uint8_t)angle };
+    esp_err_t err = espnow_comm_send_cmd(module_id, SERVO_CMD_WRITE,
+                                         payload, sizeof(payload));
+    return bval_num((double)err);
+}
+
+// ====================================================================
+// 27. servo_sweep(id, from, to, step, delay_ms) - repeated servo_write
+// ====================================================================
+
+static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("servo_sweep", n, 5) ||
+        args[1].type != VAL_NUM || args[2].type != VAL_NUM ||
+        args[3].type != VAL_NUM || args[4].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("servo_sweep", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int from = (int)args[1].num;
+    int to = (int)args[2].num;
+    int step = (int)args[3].num;
+    int delay_ms = (int)args[4].num;
+
+    if (from < 0) from = 0;
+    if (from > 180) from = 180;
+    if (to < 0) to = 0;
+    if (to > 180) to = 180;
+    if (step == 0) step = (to >= from) ? 10 : -10;
+    if (to > from && step < 0) step = -step;
+    if (to < from && step > 0) step = -step;
+    if (delay_ms < 20) delay_ms = 20;
+    if (delay_ms > 5000) delay_ms = 5000;
+
+    esp_err_t last_err = ESP_OK;
+    for (int angle = from;; angle += step) {
+        uint8_t payload[1] = { (uint8_t)angle };
+        last_err = espnow_comm_send_cmd(module_id, SERVO_CMD_WRITE,
+                                        payload, sizeof(payload));
+        if ((step > 0 && angle >= to) || (step < 0 && angle <= to)) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        int next = angle + step;
+        if ((step > 0 && next > to) || (step < 0 && next < to)) {
+            angle = to - step;
+        }
+    }
+
+    return bval_num((double)last_err);
 }

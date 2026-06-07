@@ -291,8 +291,31 @@ static Value eval_expr(ASTNode* node, Environment* env, ExecutionContext* ctx)
 
         switch (node->op) {
 
-        // Arithmetic
-        case TOKEN_PLUS:
+        // String concatenation (TOKEN_PLUS on two strings)
+        case TOKEN_PLUS: {
+            if (left.type == VAL_STR && right.type == VAL_STR) {
+                char buf[INTERN_ENTRY_LEN];
+                int n = snprintf(buf, sizeof(buf), "%s%s", left.str, right.str);
+                if (n < 0 || n >= (int)sizeof(buf)) {
+#if CONFIG_STRICT_MODE
+                    ctx->constraint_violated = true;
+                    ctx->violation_msg       = "Type error: concatenation result too long";
+#endif
+                    return val_undefined();
+                }
+                return val_str(intern_string(buf, n));
+            }
+            if (left.type == VAL_NUM && right.type == VAL_NUM) {
+                return val_num(left.num + right.num);
+            }
+#if CONFIG_STRICT_MODE
+            ctx->constraint_violated = true;
+            ctx->violation_msg       = "Type error: arithmetic needs numbers";
+#endif
+            return val_num(0.0);
+        }
+
+        // Arithmetic (minus, multiply, divide — numeric only)
         case TOKEN_MINUS:
         case TOKEN_STAR:
         case TOKEN_SLASH: {
@@ -306,7 +329,6 @@ static Value eval_expr(ASTNode* node, Environment* env, ExecutionContext* ctx)
             double a = left.num;
             double b = right.num;
             switch (node->op) {
-                case TOKEN_PLUS:  return val_num(a + b);
                 case TOKEN_MINUS: return val_num(a - b);
                 case TOKEN_STAR:  return val_num(a * b);
                 case TOKEN_SLASH: return val_num((b != 0.0) ? a / b : 0.0);
@@ -903,7 +925,9 @@ ResourceReport validate_resources(ASTNode* ast, Environment* env)
     r.passed = true;
     r.ast_node_count = ast_pool_used();
     r.ast_tree_depth = compute_tree_depth(ast);
-    r.global_bindings_used = (env) ? env->count : 0;
+    int env_bindings = (env) ? env->count : 0;
+    int builtin_bindings = (env_bindings >= BIF_COUNT) ? BIF_COUNT : 0;
+    r.global_bindings_used = env_bindings - builtin_bindings;
 
     WalkState ws;
     memset(&ws, 0, sizeof(ws));

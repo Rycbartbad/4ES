@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "esp_now.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -512,16 +513,20 @@ PeerEntry* peer_mgr_find_by_id(uint8_t module_id, bool* out_conflict)
     PEER_LOCK();
     int match_count = 0;
     PeerEntry* first = NULL;
+    PeerEntry* first_active = NULL;
     for (int i = 0; i < MAX_PEERS; i++) {
         if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
         if (s_peers[i].module_id == module_id) {
             match_count++;
             if (first == NULL) first = &s_peers[i];
+            if (s_peers[i].state == PEER_ACTIVE && first_active == NULL) {
+                first_active = &s_peers[i];
+            }
         }
     }
     if (out_conflict) *out_conflict = (match_count > 1);
     PEER_UNLOCK();
-    return first;
+    return first_active ? first_active : first;
 }
 
 PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict)
@@ -535,16 +540,20 @@ PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict)
     PEER_LOCK();
     int match_count = 0;
     PeerEntry* first = NULL;
+    PeerEntry* first_active = NULL;
     for (int i = 0; i < MAX_PEERS; i++) {
         if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
         if (strncmp(s_peers[i].name, name, 16) == 0) {
             match_count++;
             if (first == NULL) first = &s_peers[i];
+            if (s_peers[i].state == PEER_ACTIVE && first_active == NULL) {
+                first_active = &s_peers[i];
+            }
         }
     }
     if (out_conflict) *out_conflict = (match_count > 1);
     PEER_UNLOCK();
-    return first;
+    return first_active ? first_active : first;
 }
 
 PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id)
@@ -625,6 +634,11 @@ void peer_mgr_age_scan(TickType_t now)
             (now - e->last_seen > pdMS_TO_TICKS(CONFIG_PEER_TIMEOUT_MS))) {
             e->state = PEER_OFFLINE;
             ESP_LOGI(TAG, "peer %s timed out → OFFLINE", e->peer_id);
+
+            // Remove from ESP-NOW internal peer table so the slot
+            // can be reused.  Stale entries prevent esp_now_add_peer
+            // from succeeding for new sensors.
+            esp_now_del_peer(e->mac);
         }
         PEER_UNLOCK();
     }
@@ -657,4 +671,48 @@ bool peer_mgr_is_duplicate(PeerEntry* entry, uint8_t seq_id)
     entry->dedup_count++;
     PEER_UNLOCK();
     return false;
+}
+
+// ------------------------------------------------------------------
+// ESP-NOW peer re-add (after WiFi stop/start cycle)
+// ------------------------------------------------------------------
+void peer_mgr_espnow_readd_all(void)
+{
+    for (int i = 0; i < MAX_PEERS; i++) {
+        PEER_LOCK();
+        if (ENTRY_IS_EMPTY(&s_peers[i])) {
+            PEER_UNLOCK();
+            continue;
+        }
+        PeerEntry* e = &s_peers[i];
+        if (e->state != PEER_ACTIVE) {
+            PEER_UNLOCK();
+            continue;
+        }
+
+        // Re-add to ESP-NOW internal table
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, e->mac, 6);
+#if defined(CONFIG_SOFTAP_CHANNEL) && CONFIG_SOFTAP_CHANNEL > 0
+        peer.channel = CONFIG_SOFTAP_CHANNEL;
+#else
+        peer.channel = 1;
+#endif
+        peer.ifidx = WIFI_IF_STA;
+        peer.encrypt = false;
+
+        esp_err_t ret = esp_now_add_peer(&peer);
+        if (ret == ESP_OK) {
+            // Reset last_seen to now so the peer doesn't immediately
+            // timeout when aging resumes after WiFi restart.
+            e->last_seen = xTaskGetTickCount();
+            ESP_LOGI(TAG, "re-added ESP-NOW peer %s channel %u",
+                     e->peer_id, (unsigned)peer.channel);
+        } else if (ret != ESP_ERR_ESPNOW_EXIST) {
+            ESP_LOGW(TAG, "re-add peer %s failed: %d", e->peer_id, ret);
+        }
+        PEER_UNLOCK();
+    }
+
+    ESP_LOGI(TAG, "ESP-NOW peer re-add complete, %d active", peer_mgr_active_count());
 }

@@ -26,11 +26,11 @@ config FUNC_POOL_SIZE
 
 config MAX_BINDINGS
     int "Max bindings per scope"
-    default 32
+    default 48
     range 16 128
     help
         Maximum variable/function bindings per environment scope.
-        Built-in functions consume ~21 slots.
+        Built-in functions consume 27 slots.
 
 config MAX_FUNC_PARAMS
     int "Max function parameters"
@@ -41,11 +41,11 @@ config MAX_FUNC_PARAMS
 
 config MAX_PARSE_DEPTH
     int "Max recursive parse depth"
-    default 32
+    default 128
     range 16 256
     help
         Maximum nesting depth for recursive-descent parser.
-        32 × 120B/stack-frame ≈ 4KB worst-case on 8KB task stack.
+        128 × 120B/stack-frame ≈ 15KB worst-case on 8KB task stack.
 
 config MAX_EXEC_DEPTH
     int "Max recursive execution depth"
@@ -65,11 +65,11 @@ config MAX_LOOP_ITERATIONS
 
 config MAX_SENSOR_CALLS_PER_SCRIPT
     int "Max sensor calls per script"
-    default 20
-    range 5 200
+    default 5000
+    range 5 50000
     help
         Maximum number of remote_read() calls per script execution.
-        Limits ESP-NOW channel usage.
+        Limits ESP-NOW channel usage.  5000 × 800ms worst-case ≈ 1hr.
 
 config MAX_EXEC_STATEMENTS
     int "Max executed statements per script"

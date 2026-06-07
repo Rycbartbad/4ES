@@ -1,11 +1,29 @@
 #include "sdkconfig.h"
 #include "hw_drivers/drivers.h"
 #include "driver/gpio.h"
-#include "driver/adc.h"
 #include "driver/ledc.h"
+#include "driver/i2s_std.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 
 static const char* TAG = "hw_drivers";
+
+#ifndef CONFIG_MIC_I2S_SAMPLE_RATE_HZ
+#define CONFIG_MIC_I2S_SAMPLE_RATE_HZ 16000
+#endif
+
+// INMP441 wiring for the master board. Avoids GPIO10/11/14/15/16/17.
+#define MIC_I2S_SCK_PIN GPIO_NUM_4
+#define MIC_I2S_WS_PIN  GPIO_NUM_5
+#define MIC_I2S_SD_PIN  GPIO_NUM_6
+
+#define MIC_I2S_READ_SAMPLES 512
+#define MIC_I2S_TIMEOUT_MS   100
+
+static i2s_chan_handle_t s_mic_rx_chan = NULL;
+static bool s_mic_ready = false;
+static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+static bool s_adc1_ready = false;
 
 int hw_gpio_read(uint8_t pin)
 {
@@ -19,47 +37,71 @@ void hw_gpio_write(uint8_t pin, int val)
     gpio_set_level((gpio_num_t)pin, val != 0);
 }
 
+static esp_err_t hw_adc_init_once(void)
+{
+    if (s_adc1_ready) {
+        return ESP_OK;
+    }
+
+    adc_oneshot_unit_init_cfg_t init_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    esp_err_t ret = adc_oneshot_new_unit(&init_cfg, &s_adc1_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ADC1 init failed: %d", ret);
+        s_adc1_handle = NULL;
+        return ret;
+    }
+
+    s_adc1_ready = true;
+    return ESP_OK;
+}
+
 int hw_adc_read(uint8_t pin)
 {
-    adc1_channel_t channel;
-#if CONFIG_IDF_TARGET_ESP32C3
-    // ESP32-C3 has ADC1 channels on GPIO 0-4 only
-    switch (pin) {
-        case 0:  channel = ADC1_CHANNEL_0; break;
-        case 1:  channel = ADC1_CHANNEL_1; break;
-        case 2:  channel = ADC1_CHANNEL_2; break;
-        case 3:  channel = ADC1_CHANNEL_3; break;
-        case 4:  channel = ADC1_CHANNEL_4; break;
-        default:
-            ESP_LOGW(TAG, "ADC pin %u not mapped (C3: GPIO 0-4 only), using ch0", pin);
-            channel = ADC1_CHANNEL_0;
-            break;
-    }
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(channel, ADC_ATTEN_DB_12);
-    return adc1_get_raw(channel);
-#else
+    adc_channel_t channel;
     // ESP32-S3 has ADC1 channels on GPIO 1-10
     switch (pin) {
-        case 1:  channel = ADC1_CHANNEL_0; break;
-        case 2:  channel = ADC1_CHANNEL_1; break;
-        case 3:  channel = ADC1_CHANNEL_2; break;
-        case 4:  channel = ADC1_CHANNEL_3; break;
-        case 5:  channel = ADC1_CHANNEL_4; break;
-        case 6:  channel = ADC1_CHANNEL_5; break;
-        case 7:  channel = ADC1_CHANNEL_6; break;
-        case 8:  channel = ADC1_CHANNEL_7; break;
-        case 9:  channel = ADC1_CHANNEL_8; break;
-        case 10: channel = ADC1_CHANNEL_9; break;
+        case 1:  channel = ADC_CHANNEL_0; break;
+        case 2:  channel = ADC_CHANNEL_1; break;
+        case 3:  channel = ADC_CHANNEL_2; break;
+        case 4:  channel = ADC_CHANNEL_3; break;
+        case 5:  channel = ADC_CHANNEL_4; break;
+        case 6:  channel = ADC_CHANNEL_5; break;
+        case 7:  channel = ADC_CHANNEL_6; break;
+        case 8:  channel = ADC_CHANNEL_7; break;
+        case 9:  channel = ADC_CHANNEL_8; break;
+        case 10: channel = ADC_CHANNEL_9; break;
         default:
             ESP_LOGW(TAG, "ADC pin %u not mapped, using ch0", pin);
-            channel = ADC1_CHANNEL_0;
+            channel = ADC_CHANNEL_0;
             break;
     }
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(channel, ADC_ATTEN_DB_12);
-    return adc1_get_raw(channel);
-#endif
+
+    if (hw_adc_init_once() != ESP_OK) {
+        return 0;
+    }
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    esp_err_t ret = adc_oneshot_config_channel(s_adc1_handle, channel,
+                                               &chan_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ADC channel config failed: ch=%d ret=%d",
+                 (int)channel, ret);
+        return 0;
+    }
+
+    int raw = 0;
+    ret = adc_oneshot_read(s_adc1_handle, channel, &raw);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ADC read failed: ch=%d ret=%d", (int)channel, ret);
+        return 0;
+    }
+    return raw;
 }
 
 void hw_pwm_write(uint8_t pin, int val)
@@ -85,4 +127,112 @@ void hw_pwm_write(uint8_t pin, int val)
         .hpoint = 0,
     };
     ledc_channel_config(&ch);
+}
+
+esp_err_t hw_mic_init(void)
+{
+    if (s_mic_ready) {
+        return ESP_OK;
+    }
+
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO,
+                                                            I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_frame_num = 256;
+
+    esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &s_mic_rx_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2S mic channel alloc failed: %d", ret);
+        s_mic_rx_chan = NULL;
+        return ret;
+    }
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_MIC_I2S_SAMPLE_RATE_HZ),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+                                                        I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = MIC_I2S_SCK_PIN,
+            .ws = MIC_I2S_WS_PIN,
+            .dout = I2S_GPIO_UNUSED,
+            .din = MIC_I2S_SD_PIN,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+
+    ret = i2s_channel_init_std_mode(s_mic_rx_chan, &std_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2S mic std init failed: %d", ret);
+        i2s_del_channel(s_mic_rx_chan);
+        s_mic_rx_chan = NULL;
+        return ret;
+    }
+
+    ret = i2s_channel_enable(s_mic_rx_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2S mic enable failed: %d", ret);
+        i2s_del_channel(s_mic_rx_chan);
+        s_mic_rx_chan = NULL;
+        return ret;
+    }
+
+    s_mic_ready = true;
+    ESP_LOGI(TAG, "INMP441 mic ready: SCK=%d WS=%d SD=%d sample_rate=%d",
+             (int)MIC_I2S_SCK_PIN, (int)MIC_I2S_WS_PIN, (int)MIC_I2S_SD_PIN,
+             CONFIG_MIC_I2S_SAMPLE_RATE_HZ);
+    return ESP_OK;
+}
+
+double hw_mic_level(void)
+{
+    if (!s_mic_ready) {
+        if (hw_mic_init() != ESP_OK) {
+            return 0.0;
+        }
+    }
+
+    int32_t samples[MIC_I2S_READ_SAMPLES];
+    size_t bytes_read = 0;
+    esp_err_t ret = i2s_channel_read(s_mic_rx_chan, samples, sizeof(samples),
+                                     &bytes_read, MIC_I2S_TIMEOUT_MS);
+    if (ret != ESP_OK || bytes_read == 0) {
+        ESP_LOGW(TAG, "I2S mic read failed: ret=%d bytes=%u",
+                 ret, (unsigned)bytes_read);
+        return 0.0;
+    }
+
+    int sample_count = (int)(bytes_read / sizeof(samples[0]));
+    uint64_t left_sum = 0;
+    uint64_t right_sum = 0;
+    int left_count = 0;
+    int right_count = 0;
+
+    for (int i = 0; i < sample_count; i += 2) {
+        int32_t left = samples[i] >> 8;  // INMP441 24-bit data in a 32-bit slot.
+        if (left < 0) left = -left;
+        left_sum += (uint32_t)left;
+        left_count++;
+
+        if (i + 1 < sample_count) {
+            int32_t right = samples[i + 1] >> 8;
+            if (right < 0) right = -right;
+            right_sum += (uint32_t)right;
+            right_count++;
+        }
+    }
+
+    uint64_t left_avg = left_count > 0 ? left_sum / (uint64_t)left_count : 0;
+    uint64_t right_avg = right_count > 0 ? right_sum / (uint64_t)right_count : 0;
+    uint64_t level = left_avg > right_avg ? left_avg : right_avg;
+
+    double percent = ((double)level * 100.0) / 8388608.0;
+    if (percent > 100.0) {
+        percent = 100.0;
+    }
+    return percent;
 }

@@ -58,6 +58,10 @@ static const char* TAG = "web_console";
 // ====================================================================
 #define NVS_NS "web_console"
 
+#ifndef CONFIG_SCRIPT_MAX_LEN
+#define CONFIG_SCRIPT_MAX_LEN 2048
+#endif
+
 // ====================================================================
 // Global abort flag reference (defined in app_main.cpp)
 // ====================================================================
@@ -665,13 +669,15 @@ static esp_err_t config_wifi_post_handler(httpd_req_t* req)
     // After saving WiFi credentials, trigger STA connection automatically
     char wifi_ssid[128] = "";
     char wifi_pass[128] = "";
+    char llm_url[256] = "";
     nvs_get_str_safe("wifi_ssid", wifi_ssid, sizeof(wifi_ssid));
     nvs_get_str_safe("wifi_pass", wifi_pass, sizeof(wifi_pass));
+    nvs_get_str_safe("llm_url", llm_url, sizeof(llm_url));
 
     cJSON* resp = cJSON_CreateObject();
     cJSON_AddStringToObject(resp, "status", "ok");
 
-    if (strlen(wifi_ssid) > 0) {
+    if (strlen(wifi_ssid) > 0 && !llm_client_uses_local_proxy(llm_url)) {
         ESP_LOGI(TAG, "WiFi saved — connecting to %s", wifi_ssid);
         esp_err_t err = wifi_connect_sta(wifi_ssid, wifi_pass);
         if (err == ESP_OK) {
@@ -679,6 +685,8 @@ static esp_err_t config_wifi_post_handler(httpd_req_t* req)
         } else {
             cJSON_AddStringToObject(resp, "wifi_status", "failed");
         }
+    } else if (strlen(wifi_ssid) > 0) {
+        cJSON_AddStringToObject(resp, "wifi_status", "saved_proxy_mode");
     }
 
     char* json = cJSON_PrintUnformatted(resp);
@@ -837,16 +845,20 @@ static esp_err_t scan_get_handler(httpd_req_t* req)
     return ESP_OK;
 }
 
-// ---- POST /api/ai ----
-
 static esp_err_t ai_post_handler(httpd_req_t* req)
 {
     reset_inactivity_timer();
 
     // Read request body
-    char buf[1024];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    char* buf = (char*)malloc(1024);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    int received = httpd_req_recv(req, buf, 1024 - 1);
     if (received <= 0) {
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
         return ESP_FAIL;
     }
@@ -854,6 +866,7 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
     }
@@ -861,6 +874,7 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
     cJSON* prompt_item = cJSON_GetObjectItem(root, "prompt");
     if (prompt_item == NULL || prompt_item->valuestring == NULL) {
         cJSON_Delete(root);
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing prompt");
         return ESP_FAIL;
     }
@@ -870,9 +884,15 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
 
     // Copy prompt to local buffer before freeing the JSON (use-after-free
     // safety: user_prompt points into the cJSON tree)
-    char prompt_copy[1024];
-    strncpy(prompt_copy, user_prompt, sizeof(prompt_copy) - 1);
-    prompt_copy[sizeof(prompt_copy) - 1] = '\0';
+    char* prompt_copy = (char*)malloc(1024);
+    if (prompt_copy == NULL) {
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    strncpy(prompt_copy, user_prompt, 1024 - 1);
+    prompt_copy[1024 - 1] = '\0';
 
     // Read NVS config
     char wifi_ssid[128]   = "";
@@ -888,66 +908,94 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
     nvs_get_str_safe("llm_model", llm_model, sizeof(llm_model));
 
     // Validate
-    if (strlen(wifi_ssid) == 0) {
-        cJSON_Delete(root);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"Wi-Fi not configured\"}");
-        return ESP_OK;
-    }
     if (strlen(llm_url) == 0) {
         cJSON_Delete(root);
+        free(prompt_copy);
+        free(buf);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"LLM URL not configured\"}");
         return ESP_OK;
     }
+    const bool local_proxy_mode = llm_client_uses_local_proxy(llm_url);
+    if (strlen(wifi_ssid) == 0 && !local_proxy_mode) {
+        cJSON_Delete(root);
+        free(prompt_copy);
+        free(buf);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"Wi-Fi not configured\"}");
+        return ESP_OK;
+    }
 
     cJSON_Delete(root);
+    free(buf);
+    buf = NULL;
 
     // Call LLM
-    char script[2048];
-    int ret = llm_client_call(wifi_ssid, wifi_pass,
-                               llm_url, llm_key, llm_model,
-                               prompt_copy, script, sizeof(script));
+    char* script = (char*)malloc(CONFIG_SCRIPT_MAX_LEN);
+    if (script == NULL) {
+        free(prompt_copy);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"Out of memory\"}");
+        return ESP_OK;
+    }
+    script[0] = '\0';
 
+    int ret = llm_client_call(wifi_ssid, wifi_pass,
+                              llm_url, llm_key, llm_model,
+                              prompt_copy, script, CONFIG_SCRIPT_MAX_LEN);
+    free(prompt_copy);
+
+    // ---- Send HTTP response BEFORE network teardown ----
+    // llm_client_finish_network() restarts WiFi which kills the SoftAP;
+    // the browser must receive the response first.
     if (ret != 0) {
+        free(script);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req,
             "{\"status\":\"error\",\"error\":\"LLM call failed\"}");
+        llm_client_finish_network(local_proxy_mode);
         return ESP_OK;
     }
 
     if (strlen(script) == 0) {
+        free(script);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req,
             "{\"status\":\"error\",\"error\":\"No script in response\"}");
+        llm_client_finish_network(local_proxy_mode);
         return ESP_OK;
     }
 
-    // Inject script
-    int inject_ret = script_inject_enqueue(script, (int)strlen(script));
-
-    // Build response
-    cJSON* resp = cJSON_CreateObject();
-    if (inject_ret == 0) {
+    // Build and send success response before WiFi restart
+    {
+        cJSON* resp = cJSON_CreateObject();
+        if (resp == NULL) {
+            free(script);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"JSON error\"}");
+            llm_client_finish_network(local_proxy_mode);
+            return ESP_OK;
+        }
         cJSON_AddStringToObject(resp, "status", "ok");
-    } else {
-        cJSON_AddStringToObject(resp, "status", "error");
-        cJSON_AddStringToObject(resp, "error", "Injection failed");
-    }
-    cJSON_AddStringToObject(resp, "script", script);
+        cJSON_AddStringToObject(resp, "script", script);
 
-    char* json = cJSON_PrintUnformatted(resp);
-    cJSON_Delete(resp);
-
-    if (json) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json);
-        free(json);
-    } else {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"JSON error\"}");
+        char* json = cJSON_PrintUnformatted(resp);
+        cJSON_Delete(resp);
+        if (json) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, json);
+            free(json);
+        }
     }
 
+    // ---- Network teardown: WiFi restart + task resume ----
+    // Must happen AFTER the HTTP response so the browser doesn't lose its
+    // connection mid-request.
+    llm_client_finish_network(local_proxy_mode);
+
+    // Inject script (WiFi is now on ESP-NOW channel)
+    script_inject_enqueue(script, (int)strlen(script));
+    free(script);
     return ESP_OK;
 }
 
@@ -958,9 +1006,15 @@ static esp_err_t script_post_handler(httpd_req_t* req)
     reset_inactivity_timer();
 
     // Read request body
-    char buf[4096];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    char* buf = (char*)malloc(4096);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    int received = httpd_req_recv(req, buf, 4096 - 1);
     if (received <= 0) {
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
         return ESP_FAIL;
     }
@@ -968,6 +1022,7 @@ static esp_err_t script_post_handler(httpd_req_t* req)
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
     }
@@ -975,6 +1030,7 @@ static esp_err_t script_post_handler(httpd_req_t* req)
     cJSON* script_item = cJSON_GetObjectItem(root, "script");
     if (script_item == NULL || script_item->valuestring == NULL) {
         cJSON_Delete(root);
+        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing script");
         return ESP_FAIL;
     }
@@ -984,6 +1040,7 @@ static esp_err_t script_post_handler(httpd_req_t* req)
 
     int inject_ret = script_inject_enqueue(script, (int)strlen(script));
     cJSON_Delete(root);
+    free(buf);
 
     httpd_resp_set_type(req, "application/json");
     if (inject_ret == 0) {
@@ -1001,10 +1058,17 @@ static esp_err_t exec_log_get_handler(httpd_req_t* req)
 {
     reset_inactivity_timer();
 
-    char log_buf[CONFIG_EXEC_LOG_BUF_SIZE + 1];
+    char* log_buf = (char*)malloc(CONFIG_EXEC_LOG_BUF_SIZE + 1);
+    if (log_buf == NULL) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"log\":\"\"}");
+        return ESP_OK;
+    }
+
     int len = script_inject_read_log(log_buf, CONFIG_EXEC_LOG_BUF_SIZE);
 
     if (len <= 0) {
+        free(log_buf);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"log\":\"\"}");
         return ESP_OK;
@@ -1027,6 +1091,7 @@ static esp_err_t exec_log_get_handler(httpd_req_t* req)
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"log\":\"\"}");
     }
+    free(log_buf);
 
     return ESP_OK;
 }
@@ -1232,6 +1297,8 @@ esp_err_t web_console_init(void)
     // Suppress noisy 404/405 WARNINGs from httpd_uri (normal during
     // captive portal operation — OS/app probes hit unknown URIs).
     esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_parse", ESP_LOG_ERROR);
 
     // ---- 1. Initialise script inject subsystem ----
     script_inject_init();

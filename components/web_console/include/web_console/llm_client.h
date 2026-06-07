@@ -37,6 +37,15 @@ esp_err_t wifi_connect_sta(const char* ssid, const char* pass);
 bool wifi_sta_is_connected(void);
 
 /**
+ * @brief Return true when the LLM URL points at a PC-side proxy on the
+ *        ESP SoftAP subnet, e.g. http://192.168.4.2:18082/v1.
+ *
+ * In this mode the ESP keeps STA disconnected and sends HTTP over its AP
+ * interface, avoiding channel conflicts with ESP-NOW peers.
+ */
+bool llm_client_uses_local_proxy(const char* llm_url);
+
+/**
  * @brief Call LLM API to generate a script from natural language.
  *
  * Performs the full round-trip:
@@ -60,6 +69,17 @@ int llm_client_call(const char* ssid, const char* pass,
                      const char* llm_url, const char* llm_key,
                      const char* llm_model, const char* user_prompt,
                      char* script_out, int max_len);
+
+/**
+ * @brief Restore ESP-NOW channel and resume suspended tasks after LLM call.
+ *
+ * MUST be called after llm_client_call() returns (success or error), and
+ * MUST be called AFTER the HTTP response has been sent to avoid killing
+ * the SoftAP while the browser is still waiting.
+ *
+ * @param local_proxy_mode  true if the LLM URL points at a local proxy
+ */
+void llm_client_finish_network(bool local_proxy_mode);
 
 #ifdef __cplusplus
 }

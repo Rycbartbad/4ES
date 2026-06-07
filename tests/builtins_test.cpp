@@ -199,6 +199,51 @@ static void test_bif_send_motor_alias(void) {
     TEST_PASS();
 }
 
+static void test_bif_buzzer_note(void) {
+    TEST("Builtin: buzzer_note sends remote buzzer note");
+    Value args[] = { v_num(1), v_num(19), v_num(200) };
+    Value r = call_bif("buzzer_note", args, 3);
+    TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_PASS();
+}
+
+static void test_bif_buzzer_beep(void) {
+    TEST("Builtin: buzzer_beep sends repeated remote buzzer notes");
+    Value args[] = { v_num(1), v_num(2) };
+    Value r = call_bif("buzzer_beep", args, 2);
+    TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_PASS();
+}
+
+static void test_bif_buzzer_song(void) {
+    TEST("Builtin: buzzer_song sends remote buzzer song");
+    Value args[] = { v_num(1), v_num(0) };
+    Value r = call_bif("buzzer_song", args, 2);
+    TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_PASS();
+}
+
+static void test_bif_servo_write(void) {
+    TEST("Builtin: servo_write sends remote servo angle");
+    Value args[] = { v_num(1), v_num(90) };
+    Value r = call_bif("servo_write", args, 2);
+    TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_PASS();
+}
+
+static void test_bif_servo_sweep(void) {
+    TEST("Builtin: servo_sweep sends repeated remote servo angles");
+    Value args[] = { v_num(1), v_num(0), v_num(30), v_num(30), v_num(20) };
+    Value r = call_bif("servo_sweep", args, 5);
+    TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_PASS();
+}
+
 static void test_bif_arg_validation(void) {
     TEST("Builtin: argument validation (missing required args)");
     // espnow_send with 0 args should return -1
@@ -243,6 +288,11 @@ void test_builtins(void) {
     test_bif_espnow_send();
     test_bif_read_sensor_alias();
     test_bif_send_motor_alias();
+    test_bif_buzzer_note();
+    test_bif_buzzer_beep();
+    test_bif_buzzer_song();
+    test_bif_servo_write();
+    test_bif_servo_sweep();
     test_bif_arg_validation();
     test_bif_list_get_oob();
 }

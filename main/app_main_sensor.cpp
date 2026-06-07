@@ -66,7 +66,8 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #define USE_SENSOR_BH1750    0   // BH1750 light sensor
 #define USE_SENSOR_JW01      1   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
 
-#define USE_BUZZER           1   // Passive buzzer (PWM melody playback)
+#define USE_BUZZER           0   // Passive buzzer (PWM melody playback)
+#define USE_SERVO            1   // Hobby servo (50 Hz PWM position control)
 
 // ====================================================================
 // Buzzer Configuration (passive buzzer via LEDC PWM)
@@ -150,8 +151,7 @@ static const uint32_t s_jb_durs[] = {
 #define CMD_BUZZER_SONG  0x0012   // payload: [song_index]
 #define CMD_BUZZER_NOTE  0x0013   // payload: [note_id, dur_hi, dur_lo]
 #define CMD_BUZZER_MELODY 0x0014  // payload: [note1, dur1_hi, dur1_lo, note2, ...]
-                                   // note_id = octave*7 + note (C=0,D=1,E=2,F=3,G=4,A=5,B=6)
-                                   // octave 4: id 0-6, octave 5: id 7-13, rest: id 14
+                                   // note_id = semitone index: C4=0, C#4=1, ... B6=35, REST=36
 
 // Note ID to frequency lookup (37 notes: C4-B6 with semitones + REST)
 // ID = semitone_index: C=0,C#=1,D=2,D#=3,E=4,F=5,F#=6,G=7,G#=8,A=9,A#=10,B=11
@@ -165,22 +165,39 @@ static const uint16_t s_note_freqs[] = {
 #endif // USE_BUZZER
 
 // ====================================================================
+// Servo Configuration (hobby servo via LEDC PWM)
+// ====================================================================
+#if USE_SERVO
+#define SERVO_PIN               GPIO_NUM_4
+#define SERVO_LEDC_MODE         LEDC_LOW_SPEED_MODE
+#define SERVO_LEDC_TIMER        LEDC_TIMER_3
+#define SERVO_LEDC_CHANNEL      LEDC_CHANNEL_3
+#define SERVO_LEDC_DUTY_RES     LEDC_TIMER_14_BIT
+#define SERVO_DUTY_SCALE        (1U << 14)
+#define SERVO_PWM_PERIOD_US     20000
+#define SERVO_MIN_PULSE_US      1000
+#define SERVO_MAX_PULSE_US      2000
+
+#define CMD_SERVO_WRITE         0x0020   // payload: [angle_0_180]
+#endif // USE_SERVO
+
+// ====================================================================
 // Capability descriptors — describes sensor function/data format
 // Displayed in web console + injected into LLM prompts.
 // ====================================================================
 
 #if USE_SENSOR_JW01
 static const char* SENSOR_CAPABILITY =
-    "JW01 3-in-1 Air Quality Sensor: CO2(0-5000ppm), TVOC(0-5ppm), CH2O(0-5mg/m3). "
-    "Returns 3 values: [co2_ppm, tvoc_ppm, ch2o_mg_m3]. "
-#if USE_BUZZER
-    "Buzzer: GPIO4 passive buzzer. "
-    "CMD 0x0012: song. data=[id]. 0=小星星 1=生日快乐 2=铃儿响叮当. "
-    "CMD 0x0014: melody. data=[n1,dl,dh, n2,dl,dh, ...] 3B per note, max 42 notes. "
-    "NoteID (37 total): C=0/#=1/D=2/#=3/E=4/F=5/#=6/G=7/#=8/A=9/#=10/B=11, "
-    "+12 for oct5, +24 for oct6. ID 36=REST. "
-    "Dur: dl*256+dh ms (500ms=[1,244], 250ms=[0,250])"
+#if USE_SERVO
+    "Servo module: GPIO4 50Hz PWM servo. "
+    "Use servo_write(id,angle) and servo_sweep(id,from,to,step,delay). "
 #endif
+#if USE_BUZZER
+    "Doorbell: GPIO4 passive buzzer. "
+    "Use buzzer_beep(id,count), buzzer_note(id,note,dur). "
+    "remote_read returns [co2,tvoc,ch2o]. "
+#endif
+    "JW01 air sensor: remote_read returns [co2,tvoc,ch2o]."
     ;
 #elif USE_SENSOR_BH1750
 static const char* SENSOR_CAPABILITY =
@@ -302,6 +319,70 @@ static void buzzer_melody_raw(const uint8_t* data, int len)
 }
 
 #endif // USE_BUZZER
+
+// ====================================================================
+// Servo driver (50 Hz hobby servo via LEDC PWM)
+// ====================================================================
+#if USE_SERVO
+
+static void servo_init(void)
+{
+    static bool init_done = false;
+    if (init_done) return;
+
+    ledc_timer_config_t timer = {};
+    timer.speed_mode      = SERVO_LEDC_MODE;
+    timer.duty_resolution = SERVO_LEDC_DUTY_RES;
+    timer.timer_num       = SERVO_LEDC_TIMER;
+    timer.freq_hz         = 50;
+    timer.clk_cfg         = LEDC_AUTO_CLK;
+    ESP_ERROR_CHECK(ledc_timer_config(&timer));
+
+    ledc_channel_config_t channel = {};
+    channel.gpio_num   = SERVO_PIN;
+    channel.speed_mode = SERVO_LEDC_MODE;
+    channel.channel    = SERVO_LEDC_CHANNEL;
+    channel.intr_type  = LEDC_INTR_DISABLE;
+    channel.timer_sel  = SERVO_LEDC_TIMER;
+    channel.duty       = 0;
+    channel.hpoint     = 0;
+    ESP_ERROR_CHECK(ledc_channel_config(&channel));
+
+    init_done = true;
+}
+
+static uint32_t servo_angle_to_duty(int angle)
+{
+    if (angle < 0) angle = 0;
+    if (angle > 180) angle = 180;
+    uint32_t pulse_us = SERVO_MIN_PULSE_US +
+        ((uint32_t)angle * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) / 180U;
+    return (pulse_us * SERVO_DUTY_SCALE) / SERVO_PWM_PERIOD_US;
+}
+
+static void servo_write_angle(int angle)
+{
+    servo_init();
+    if (angle < 0) angle = 0;
+    if (angle > 180) angle = 180;
+    uint32_t duty = servo_angle_to_duty(angle);
+    esp_err_t err = ledc_set_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL, duty);
+    if (err != ESP_OK) {
+        ESP_LOGE("sensor", "SERVO_WRITE set_duty failed angle=%d duty=%lu err=%s",
+                 angle, (unsigned long)duty, esp_err_to_name(err));
+        return;
+    }
+    err = ledc_update_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL);
+    if (err != ESP_OK) {
+        ESP_LOGE("sensor", "SERVO_WRITE update_duty failed angle=%d duty=%lu err=%s",
+                 angle, (unsigned long)duty, esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI("sensor", "SERVO_WRITE pin=GPIO4 angle=%d duty=%lu",
+             angle, (unsigned long)duty);
+}
+
+#endif // USE_SERVO
 
 // ====================================================================
 // DHT11 Sensor Definition
@@ -585,11 +666,24 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
                        uint16_t cmd_id,
                        const uint8_t* payload, int payload_len)
 {
+#if USE_SERVO
+    if (cmd_id == CMD_SERVO_WRITE) {
+        if (payload_len >= 1) {
+            servo_write_angle((int)payload[0]);
+        } else {
+            ESP_LOGW("sensor", "CMD_SERVO_WRITE short payload=%d", payload_len);
+        }
+        return;
+    }
+#endif
+
 #if USE_BUZZER
     // ── Buzzer commands ──
     if (cmd_id == CMD_BUZZER_SONG) {
         if (payload_len >= 1) {
             buzzer_play_song(payload[0]);
+        } else {
+            ESP_LOGW("sensor", "CMD_BUZZER_SONG short payload=%d", payload_len);
         }
         return;
     }
@@ -598,6 +692,8 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
             int note_id = (int)payload[0];
             uint16_t dur = ((uint16_t)payload[1] << 8) | payload[2];
             buzzer_note(note_id, dur);
+        } else {
+            ESP_LOGW("sensor", "CMD_BUZZER_NOTE short payload=%d", payload_len);
         }
         return;
     }
@@ -777,6 +873,38 @@ extern "C" void app_main(void)
     strncpy(g_espnow_module_capability, SENSOR_CAPABILITY,
             sizeof(g_espnow_module_capability));
     g_espnow_module_capability[sizeof(g_espnow_module_capability) - 1] = '\0';
+
+    // ---- Initialize sensor hardware once at startup ----
+    // Previously done lazily inside recv_cb (static bool init_done),
+    // which caused the first DATA_REQ to always return zeros and made
+    // uart_driver_install() run in rx_task context.
+#if USE_SENSOR_JW01
+    jw01_init();
+    // Allow JW01 to send its first UART frame before the first DATA_REQ.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    printf("JW01 initialized\n");
+#elif USE_SENSOR_BH1750
+    bh1750_init();
+    printf("BH1750 initialized\n");
+#elif USE_SENSOR_VIBRATION
+    vibration_init();
+    printf("Vibration sensor initialized\n");
+#elif USE_SENSOR_RAINDROP
+    raindrop_init();
+    printf("Raindrop sensor initialized\n");
+#endif
+    // DHT11 and generic ADC need no explicit pre-initialization.
+
+#if USE_BUZZER
+    buzzer_init();
+    printf("Buzzer initialized (GPIO4, LEDC PWM)\n");
+#endif
+
+#if USE_SERVO
+    servo_init();
+    servo_write_angle(90);
+    printf("Servo initialized (GPIO4, 50Hz PWM, angle=90)\n");
+#endif
 
     // ---- Create command processing queue ----
     s_cmd_queue = xQueueCreate(SENSOR_CMD_QUEUE_LEN, sizeof(SensorCmd));

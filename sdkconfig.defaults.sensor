@@ -12,4 +12,4 @@ CONFIG_IDF_TARGET="esp32c3"
 # Master assigns module_id dynamically upon connection.
 # Override for fixed identity:
 #   CONFIG_SENSOR_MODULE_NAME="kitchen_temp"
-CONFIG_SENSOR_MODULE_NAME="sensor"
+CONFIG_SENSOR_MODULE_NAME="servo"

@@ -50,7 +50,7 @@ primary      = NUMBER | STRING | "true" | "false" | IDENTIFIER | "(" expression 
 
 String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), `\t` (tab), `\r` (carriage return).
 
-## Built-in Functions (20)
+## Built-in Functions (25)
 
 ### Sensor and Actuator I/O
 
@@ -88,6 +88,72 @@ String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), 
 | `peer_online(id)` | Check if a peer is online (by ID or name) | bool |
 | `espnow_send(id, cmd, data)` | Send a command to a remote device | void |
 
+### Remote Buzzer
+
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `buzzer_beep(id, count)` | Make a remote buzzer beep `count` times | number |
+| `buzzer_note(id, note, dur)` | Play one remote buzzer note. Useful notes: 0=C4, 12=C5, 19=G5, 24=C6, 36=rest. `dur` is milliseconds. | number |
+| `buzzer_song(id, song)` | Play a preset remote buzzer song: 0=twinkle, 1=birthday, 2=jingle. | number |
+
+For "make the buzzer beep twice" / "蜂鸣器叫两声", generate:
+
+```c
+buzzer_beep(1,2);
+```
+
+Use a listed buzzer-capable peer id or name when available. Do not emit raw
+hex command IDs such as `0x0013`; the script lexer accepts decimal numbers.
+
+### Remote Servo
+
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `servo_write(id, angle)` | Set a remote servo angle. Clamp angle to 0-180 degrees. | number |
+| `servo_sweep(id, from, to, step, delay)` | Sweep a remote servo between angles. `delay` is milliseconds between steps. | number |
+
+For "turn the servo to 90 degrees" / "舵机转到90度", generate:
+
+```c
+servo_write(1,90);
+```
+
+For a generic sweep request, generate:
+
+```c
+servo_sweep(1,0,180,15,200);
+```
+
+Use a listed servo-capable peer id or name when available.
+
+For combined actuator requests, keep every requested actuator action. Do not
+drop buzzer actions when the prompt also mentions a servo. Since scripts run
+sequentially, approximate "at the same time" by interleaving commands with
+`sleep(ms)`.
+
+If the user gives a finite servo angle sequence, do not wrap it in `while`
+unless they explicitly ask to repeat or loop.
+
+Chinese "蜂鸣器每隔一秒叫一声" means add `buzzer_beep(...,1)` at t=0
+and then every 1000ms during the finite action sequence. Prefer peer names such as
+`"servo"` and `"doorbell"` when those names are listed online.
+
+Example: for "move servo 90,75,105,90 every 500ms and beep every second",
+generate an explicit sequence containing both `servo_write(...)` and
+`buzzer_beep(...)`, for example:
+
+```javascript
+print(servo_write("servo",90));
+print(buzzer_beep("doorbell",1));
+sleep(500);
+print(servo_write("servo",75));
+sleep(500);
+print(servo_write("servo",105));
+print(buzzer_beep("doorbell",1));
+sleep(500);
+print(servo_write("servo",90));
+```
+
 ### List Operations
 
 | Function | Description | Returns |
@@ -97,7 +163,7 @@ String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), 
 | `list_set(list, index, val)` | Set element at index (0-based) | void |
 | `list_len(list)` | Get the current length of the list | number |
 
-> **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid. The interpreter tries string name first, then numeric ID.
+> **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `servo_write`, `servo_sweep`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid.
 
 ## Resource Constraints (HARD LIMITS)
 
@@ -112,7 +178,7 @@ These limits are enforced at runtime and cannot be bypassed:
 | `MAX_PARSE_DEPTH` | **32** | Maximum parser recursion depth |
 | `MAX_EXEC_DEPTH` | **64** | Maximum execution recursion depth (function calls) |
 | `ENV_POOL_SIZE` | **4** | Maximum nested function call depth |
-| `MAX_BINDINGS` | **32** | Variables per scope |
+| `MAX_BINDINGS` | **48** | Variables per scope |
 | `FUNC_POOL_SIZE` | **16** | Maximum user-defined functions |
 | `AST_POOL_SIZE` | **256** | Maximum AST nodes per script |
 | List max size | **16** | Elements per list |
