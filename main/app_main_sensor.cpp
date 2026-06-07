@@ -29,11 +29,13 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "esp_log.h"
 
 #include "espnow_comm/comm.h"
 #include "espnow_comm/protocol.h"
 
 #include "hw_drivers/drivers.h"
+#include "driver/ledc.h"
 
 #include "esp_random.h"
 
@@ -64,6 +66,104 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #define USE_SENSOR_BH1750    0   // BH1750 light sensor
 #define USE_SENSOR_JW01      1   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
 
+#define USE_BUZZER           1   // Passive buzzer (PWM melody playback)
+
+// ====================================================================
+// Buzzer Configuration (passive buzzer via LEDC PWM)
+// ====================================================================
+#if USE_BUZZER
+#define BUZZER_PIN              GPIO_NUM_4
+#define BUZZER_LEDC_MODE        LEDC_LOW_SPEED_MODE
+#define BUZZER_LEDC_TIMER       LEDC_TIMER_2
+#define BUZZER_LEDC_CHANNEL     LEDC_CHANNEL_2
+#define BUZZER_LEDC_DUTY_RES    LEDC_TIMER_10_BIT
+#define BUZZER_LEDC_DUTY_ON     512    // 50% duty cycle
+
+// ── Musical note frequencies (Hz) ──
+#define NOTE_C4  262   // Middle C (do)
+#define NOTE_D4  294   // re
+#define NOTE_E4  330   // mi
+#define NOTE_F4  349   // fa
+#define NOTE_G4  392   // sol
+#define NOTE_A4  440   // la
+#define NOTE_B4  494   // si
+#define NOTE_AS4 466   // la#/sib
+#define NOTE_C5  523   // high C
+#define NOTE_D5  587
+#define NOTE_E5  659
+#define NOTE_F5  698
+#define NOTE_G5  784
+#define NOTE_A5  880
+#define NOTE_R   0     // rest (silence)
+
+// ── Predefined songs ──
+// Song index → espnow_send(id, 0x0012, [song_index])
+#define SONG_TWINKLE        0  // 小星星
+#define SONG_HAPPY_BIRTHDAY 1
+#define SONG_JINGLE_BELLS   2
+
+// 小星星 (Twinkle Twinkle Little Star)
+static const uint32_t s_twinkle_notes[] = {
+    NOTE_C4, NOTE_C4, NOTE_G4, NOTE_G4, NOTE_A4, NOTE_A4, NOTE_G4, NOTE_R,
+    NOTE_F4, NOTE_F4, NOTE_E4, NOTE_E4, NOTE_D4, NOTE_D4, NOTE_C4, NOTE_R,
+    NOTE_G4, NOTE_G4, NOTE_F4, NOTE_F4, NOTE_E4, NOTE_E4, NOTE_D4, NOTE_R,
+    NOTE_G4, NOTE_G4, NOTE_F4, NOTE_F4, NOTE_E4, NOTE_E4, NOTE_D4, NOTE_R,
+    NOTE_C4, NOTE_C4, NOTE_G4, NOTE_G4, NOTE_A4, NOTE_A4, NOTE_G4, NOTE_R,
+    NOTE_F4, NOTE_F4, NOTE_E4, NOTE_E4, NOTE_D4, NOTE_D4, NOTE_C4, NOTE_R,
+};
+static const uint32_t s_twinkle_durs[] = {
+    400,400,400,400,400,400,800,100,  400,400,400,400,400,400,800,100,
+    400,400,400,400,400,400,800,100,  400,400,400,400,400,400,800,100,
+    400,400,400,400,400,400,800,100,  400,400,400,400,400,400,800,100,
+};
+#define TWINKLE_COUNT (sizeof(s_twinkle_notes) / sizeof(s_twinkle_notes[0]))
+
+// Happy Birthday
+static const uint32_t s_hb_notes[] = {
+    NOTE_C4,NOTE_C4,NOTE_D4,NOTE_C4,NOTE_F4,NOTE_E4, NOTE_R,
+    NOTE_C4,NOTE_C4,NOTE_D4,NOTE_C4,NOTE_G4,NOTE_F4, NOTE_R,
+    NOTE_C4,NOTE_C4,NOTE_C5,NOTE_A4,NOTE_F4,NOTE_E4,NOTE_D4,NOTE_R,
+    NOTE_AS4,NOTE_AS4,NOTE_A4,NOTE_F4,NOTE_G4,NOTE_F4,NOTE_R,
+};
+static const uint32_t s_hb_durs[] = {
+    250,250,500,500,500,800,200,  250,250,500,500,500,800,200,
+    250,250,500,500,500,500,500,200,  250,250,500,500,500,800,200,
+};
+#define HB_COUNT (sizeof(s_hb_notes) / sizeof(s_hb_notes[0]))
+
+// Jingle Bells
+static const uint32_t s_jb_notes[] = {
+    NOTE_E4,NOTE_E4,NOTE_E4,NOTE_R,  NOTE_E4,NOTE_E4,NOTE_E4,NOTE_R,
+    NOTE_E4,NOTE_G4,NOTE_C4,NOTE_D4,NOTE_E4,NOTE_R,
+    NOTE_F4,NOTE_F4,NOTE_F4,NOTE_F4,NOTE_F4,NOTE_E4,NOTE_E4,NOTE_E4,NOTE_E4,
+    NOTE_E4,NOTE_D4,NOTE_D4,NOTE_E4,NOTE_D4,NOTE_R,NOTE_G4,NOTE_R,
+};
+static const uint32_t s_jb_durs[] = {
+    300,300,600,100,  300,300,600,100,
+    300,500,300,300,800,200,
+    250,250,250,250,300,250,250,250,250,
+    300,300,300,300,600,100,600,100,
+};
+#define JB_COUNT (sizeof(s_jb_notes) / sizeof(s_jb_notes[0]))
+
+// ── Buzzer command IDs ──
+#define CMD_BUZZER_SONG  0x0012   // payload: [song_index]
+#define CMD_BUZZER_NOTE  0x0013   // payload: [note_id, dur_hi, dur_lo]
+#define CMD_BUZZER_MELODY 0x0014  // payload: [note1, dur1_hi, dur1_lo, note2, ...]
+                                   // note_id = octave*7 + note (C=0,D=1,E=2,F=3,G=4,A=5,B=6)
+                                   // octave 4: id 0-6, octave 5: id 7-13, rest: id 14
+
+// Note ID to frequency lookup (37 notes: C4-B6 with semitones + REST)
+// ID = semitone_index: C=0,C#=1,D=2,D#=3,E=4,F=5,F#=6,G=7,G#=8,A=9,A#=10,B=11
+// Octave 4: ID  0-11, Octave 5: ID 12-23, Octave 6: ID 24-35, REST: ID 36
+static const uint16_t s_note_freqs[] = {
+    262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494,   // C4-B4
+    523, 554, 587, 622, 659, 698, 740, 784, 831, 880, 932, 988,   // C5-B5
+    1047,1109,1175,1245,1319,1397,1480,1568,1661,1760,1865,1976,  // C6-B6
+    0,                                                              // REST
+};
+#endif // USE_BUZZER
+
 // ====================================================================
 // Capability descriptors — describes sensor function/data format
 // Displayed in web console + injected into LLM prompts.
@@ -72,7 +172,16 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #if USE_SENSOR_JW01
 static const char* SENSOR_CAPABILITY =
     "JW01 3-in-1 Air Quality Sensor: CO2(0-5000ppm), TVOC(0-5ppm), CH2O(0-5mg/m3). "
-    "Returns 3 values: [co2_ppm, tvoc_ppm, ch2o_mg_m3].";
+    "Returns 3 values: [co2_ppm, tvoc_ppm, ch2o_mg_m3]. "
+#if USE_BUZZER
+    "Buzzer: GPIO4 passive buzzer. "
+    "CMD 0x0012: song. data=[id]. 0=小星星 1=生日快乐 2=铃儿响叮当. "
+    "CMD 0x0014: melody. data=[n1,dl,dh, n2,dl,dh, ...] 3B per note, max 42 notes. "
+    "NoteID (37 total): C=0/#=1/D=2/#=3/E=4/F=5/#=6/G=7/#=8/A=9/#=10/B=11, "
+    "+12 for oct5, +24 for oct6. ID 36=REST. "
+    "Dur: dl*256+dh ms (500ms=[1,244], 250ms=[0,250])"
+#endif
+    ;
 #elif USE_SENSOR_BH1750
 static const char* SENSOR_CAPABILITY =
     "BH1750 Light Sensor: ambient light(0-65535 lux). "
@@ -94,6 +203,105 @@ static const char* SENSOR_CAPABILITY =
     "Generic ADC Sensor: reads analog voltages on pins 4,5,6. "
     "Returns 3 values: [adc_pin4, adc_pin5, adc_pin6] (0-4095).";
 #endif
+
+// ====================================================================
+// Buzzer driver (passive buzzer via LEDC PWM)
+// ====================================================================
+#if USE_BUZZER
+
+static void buzzer_init(void)
+{
+    static bool init_done = false;
+    if (init_done) return;
+
+    ledc_timer_config_t timer = {};
+    timer.speed_mode      = BUZZER_LEDC_MODE;
+    timer.duty_resolution = BUZZER_LEDC_DUTY_RES;
+    timer.timer_num       = BUZZER_LEDC_TIMER;
+    timer.freq_hz         = 1000;
+    timer.clk_cfg         = LEDC_AUTO_CLK;
+    ESP_ERROR_CHECK(ledc_timer_config(&timer));
+
+    ledc_channel_config_t channel = {};
+    channel.gpio_num   = BUZZER_PIN;
+    channel.speed_mode = BUZZER_LEDC_MODE;
+    channel.channel    = BUZZER_LEDC_CHANNEL;
+    channel.intr_type  = LEDC_INTR_DISABLE;
+    channel.timer_sel  = BUZZER_LEDC_TIMER;
+    channel.duty       = 0;
+    channel.hpoint     = 0;
+    ESP_ERROR_CHECK(ledc_channel_config(&channel));
+
+    init_done = true;
+}
+
+static void buzzer_tone(uint32_t freq_hz, uint32_t duration_ms)
+{
+    buzzer_init();
+    if (freq_hz == 0) {
+        ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
+        ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
+        if (duration_ms > 0) vTaskDelay(pdMS_TO_TICKS(duration_ms));
+        return;
+    }
+    ledc_set_freq(BUZZER_LEDC_MODE, BUZZER_LEDC_TIMER, freq_hz);
+    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, BUZZER_LEDC_DUTY_ON);
+    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
+    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
+}
+
+static void buzzer_play_song(int song_index)
+{
+    const uint32_t* notes;
+    const uint32_t* durs;
+    int count;
+
+    switch (song_index) {
+    case SONG_TWINKLE:
+        notes = s_twinkle_notes; durs = s_twinkle_durs; count = TWINKLE_COUNT; break;
+    case SONG_HAPPY_BIRTHDAY:
+        notes = s_hb_notes; durs = s_hb_durs; count = HB_COUNT; break;
+    case SONG_JINGLE_BELLS:
+        notes = s_jb_notes; durs = s_jb_durs; count = JB_COUNT; break;
+    default:
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (notes[i] == NOTE_R) {
+            vTaskDelay(pdMS_TO_TICKS(durs[i]));
+        } else {
+            uint32_t play_ms = (durs[i] * 9) / 10;
+            buzzer_tone(notes[i], play_ms);
+            vTaskDelay(pdMS_TO_TICKS(durs[i] / 10 + 20));
+        }
+    }
+}
+
+static void buzzer_note(int note_id, uint32_t duration_ms)
+{
+    if (note_id < 0 || note_id >= (int)(sizeof(s_note_freqs)/sizeof(s_note_freqs[0]))) return;
+    uint16_t freq = s_note_freqs[note_id];
+    buzzer_tone(freq, duration_ms);
+}
+
+// melody_raw: payload = [note1, dur1_hi, dur1_lo, note2, dur2_hi, dur2_lo, ...]
+// Each note is 3 bytes. Payload length determines note count.
+static void buzzer_melody_raw(const uint8_t* data, int len)
+{
+    int count = len / 3;
+    for (int i = 0; i < count; i++) {
+        int note_id = (int)data[i * 3];
+        uint16_t dur = ((uint16_t)data[i * 3 + 1] << 8) | data[i * 3 + 2];
+        uint32_t play_ms = (dur * 9) / 10;
+        buzzer_note(note_id, play_ms);
+        vTaskDelay(pdMS_TO_TICKS(dur / 10 + 20));
+    }
+}
+
+#endif // USE_BUZZER
 
 // ====================================================================
 // DHT11 Sensor Definition
@@ -300,11 +508,12 @@ static bool jw01_read(double* co2, double* tvoc, double* ch2o) {
 // ====================================================================
 
 typedef struct {
-    uint8_t src_mac[6];   // sender MAC for unicast reply
-    uint8_t msg_type;     // MSG_DATA_REQ or MSG_CMD
-    uint8_t req_seq;      // seq_id from request header — echoed in response
-    uint8_t payload[16];  // CMD payload bytes (pin, val, …)
-    int     payload_len;  // number of valid bytes in payload[]
+    uint8_t  src_mac[6];
+    uint8_t  msg_type;
+    uint8_t  req_seq;
+    uint16_t cmd_id;
+    uint8_t  payload[128];  // up to 42 notes (3 bytes each)
+    int      payload_len;
 } SensorCmd;
 
 #define SENSOR_CMD_QUEUE_LEN 4
@@ -373,8 +582,32 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
 // ====================================================================
 
 static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
+                       uint16_t cmd_id,
                        const uint8_t* payload, int payload_len)
 {
+#if USE_BUZZER
+    // ── Buzzer commands ──
+    if (cmd_id == CMD_BUZZER_SONG) {
+        if (payload_len >= 1) {
+            buzzer_play_song(payload[0]);
+        }
+        return;
+    }
+    if (cmd_id == CMD_BUZZER_NOTE) {
+        if (payload_len >= 3) {
+            int note_id = (int)payload[0];
+            uint16_t dur = ((uint16_t)payload[1] << 8) | payload[2];
+            buzzer_note(note_id, dur);
+        }
+        return;
+    }
+    if (cmd_id == CMD_BUZZER_MELODY) {
+        buzzer_melody_raw(payload, payload_len);
+        return;
+    }
+#endif
+
+    // ── Default: GPIO write ──
     if (payload_len < 2) return;
     uint8_t pin = payload[0];
     uint8_t val = payload[1];
@@ -430,8 +663,11 @@ static void sensor_recv_cb(const uint8_t* src_mac, uint8_t msg_type,
     SensorCmd cmd = {};
     memcpy(cmd.src_mac, src_mac, 6);
     cmd.msg_type = msg_type;
-    cmd.req_seq  = (len >= (int)MSG_HEADER_SIZE)
-                   ? ((const MsgHeader*)data)->seq_id : 0;
+    if (len >= (int)MSG_HEADER_SIZE) {
+        const MsgHeader* hdr = (const MsgHeader*)data;
+        cmd.req_seq = hdr->seq_id;
+        cmd.cmd_id  = hdr->cmd_id;
+    }
 
     if (msg_type == MSG_CMD) {
         // Extract payload (strip the 7-byte header).
@@ -469,7 +705,7 @@ static void cmd_task(void* arg)
             handle_data_req(cmd.src_mac, cmd.req_seq);
             break;
         case MSG_CMD:
-            handle_cmd(cmd.src_mac, cmd.req_seq,
+            handle_cmd(cmd.src_mac, cmd.req_seq, cmd.cmd_id,
                        cmd.payload, cmd.payload_len);
             break;
         default:
