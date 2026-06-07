@@ -942,11 +942,15 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
                               prompt_copy, script, CONFIG_SCRIPT_MAX_LEN);
     free(prompt_copy);
 
+    // ---- Send HTTP response BEFORE network teardown ----
+    // llm_client_finish_network() restarts WiFi which kills the SoftAP;
+    // the browser must receive the response first.
     if (ret != 0) {
         free(script);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req,
             "{\"status\":\"error\",\"error\":\"LLM call failed\"}");
+        llm_client_finish_network(local_proxy_mode);
         return ESP_OK;
     }
 
@@ -955,48 +959,40 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req,
             "{\"status\":\"error\",\"error\":\"No script in response\"}");
+        llm_client_finish_network(local_proxy_mode);
         return ESP_OK;
     }
 
-    if (!local_proxy_mode) {
-        // Give Wi-Fi time to settle back onto the ESP-NOW channel after the
-        // LLM STA connection. Remote scripts can otherwise run before peers
-        // are visible again.
-        vTaskDelay(pdMS_TO_TICKS(1200));
-    }
-
-    // Inject script
-    int inject_ret = script_inject_enqueue(script, (int)strlen(script));
-
-    // Build response
-    cJSON* resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        free(script);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"JSON error\"}");
-        return ESP_OK;
-    }
-    if (inject_ret == 0) {
+    // Build and send success response before WiFi restart
+    {
+        cJSON* resp = cJSON_CreateObject();
+        if (resp == NULL) {
+            free(script);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"JSON error\"}");
+            llm_client_finish_network(local_proxy_mode);
+            return ESP_OK;
+        }
         cJSON_AddStringToObject(resp, "status", "ok");
-    } else {
-        cJSON_AddStringToObject(resp, "status", "error");
-        cJSON_AddStringToObject(resp, "error", "Injection failed");
-    }
-    cJSON_AddStringToObject(resp, "script", script);
+        cJSON_AddStringToObject(resp, "script", script);
 
-    char* json = cJSON_PrintUnformatted(resp);
-    cJSON_Delete(resp);
-
-    if (json) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json);
-        free(json);
-    } else {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"status\":\"error\",\"error\":\"JSON error\"}");
+        char* json = cJSON_PrintUnformatted(resp);
+        cJSON_Delete(resp);
+        if (json) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, json);
+            free(json);
+        }
     }
+
+    // ---- Network teardown: WiFi restart + task resume ----
+    // Must happen AFTER the HTTP response so the browser doesn't lose its
+    // connection mid-request.
+    llm_client_finish_network(local_proxy_mode);
+
+    // Inject script (WiFi is now on ESP-NOW channel)
+    script_inject_enqueue(script, (int)strlen(script));
     free(script);
-
     return ESP_OK;
 }
 

@@ -171,6 +171,12 @@ static const BuiltinEntry s_builtin_entries[] = {
 
 // ---- Persistent FuncObj array for builtins (body = NULL = builtin) ---
 
+// Callback: read cached remote sensor values (LCD sync).
+// Set by ui_lvgl_init(); remains NULL if LCD is not compiled in.
+// Signature: (module_id, out_values, max) → count of values copied.
+extern int (*g_sensor_read_callback)(uint8_t module_id, double* out, int max);
+int (*g_sensor_read_callback)(uint8_t module_id, double* out, int max) = NULL;
+
 static FuncObj s_builtin_funcs[BIF_COUNT];
 static bool    s_builtins_registered = false;
 
@@ -841,13 +847,28 @@ static Value bif_list_free_builtin(Value* args, int n, ExecutionContext* ctx)
 }
 
 // ====================================================================
-// 20. read_sensor(pin) — alias for analog_read
+// 20. read_sensor(id_or_name) — read cached remote sensor value (synced with LCD)
 // ====================================================================
 
 static Value bif_read_sensor(Value* args, int n, ExecutionContext* ctx)
 {
-    // Delegates to analog_read
-    return bif_analog_read(args, n, ctx);
+    (void)ctx;
+    if (n < 1) return bval_num(0);
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("read_sensor", &args[0], ctx, &module_id)) {
+        return bval_num(0);
+    }
+
+    if (g_sensor_read_callback != NULL) {
+        double values[16];
+        int count = g_sensor_read_callback(module_id, values, 16);
+        if (count > 0) {
+            return bval_num(values[0]);  // always single value
+        }
+    }
+
+    return bval_num(0);
 }
 
 // ====================================================================

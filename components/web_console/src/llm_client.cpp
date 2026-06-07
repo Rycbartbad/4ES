@@ -202,7 +202,7 @@ static bool restore_espnow_channel(void)
     return true;
 }
 
-static void finish_llm_network(bool local_proxy_mode)
+void llm_client_finish_network(bool local_proxy_mode)
 {
     if (local_proxy_mode) {
         set_softap_default_netif();
@@ -516,14 +516,17 @@ static int build_system_prompt(char* buf, int max_len)
         "- list_get(lst,i) -> number    get element at index i (0-based) from list\n"
         "- list_len(lst) -> number      number of elements in list\n\n"
         "CRITICAL — sensor data handling:\n"
-        "- remote_read() may return a LIST (multiple sensor values) or a single NUMBER.\n"
-        "- For single-value sensors: you can use the return value directly, e.g. var t = remote_read(1); if (t > 30) { ... }\n"
-        "- For multi-value sensors (most sensors): remote_read returns a LIST. You MUST use list_get() to extract each value.\n"
-        "- Example correct: var readings = remote_read(\"sensor\"); var rain = list_get(readings, 0); if (rain == 1) { buzzer_beep(\"doorbell\", 3); }\n"
-        "- Example WRONG: var rain = remote_read(\"sensor\"); if (rain == 1) { ... }  ← this compares a list to a number, always false!\n"
-        "- Prefer remote_read_avg(id) when you only need a single representative value — it always returns a number, never a list.\n"
-        "- ALWAYS check list_len() if you don't know how many values the sensor returns.\n\n"
-        "- read_sensor(pin) -> number   read LOCAL analog sensor (ADC pin), returns 0-4095\n"
+        "- remote_read() may return a LIST (multiple sensor values) or a single NUMBER. Use list_get() for multi-value sensors.\n"
+        "- read_sensor() ALWAYS returns a single NUMBER — use directly, no list_get needed. It reads the LCD-cached value.\n"
+        "- For single-value sensors: you can use read_sensor(id) directly, e.g. var t = read_sensor(1); if (t > 30) { ... }\n"
+        "- Example correct with read_sensor: var val = read_sensor(\"sensor\"); if (val == 1) { buzzer_beep(\"doorbell\", 3); }\n"
+        "CRITICAL — polling loops:\n"
+        "- For continuous sensor monitoring, you MUST wrap the polling in while(true), NOT while(condition).\n"
+        "- WRONG: while (rain == 1) { ... }  ← loop never starts if rain != 1 on first read\n"
+        "- CORRECT: while (true) { var rain = read_sensor(\"sensor\"); if (rain == 1) { buzzer_beep(\"doorbell\", 1); servo_write(\"servo\", 90); sleep(500); servo_write(\"servo\", 0); } sleep(500); }\n"
+        "- The condition check (if, ==, etc.) goes INSIDE the while(true) body, not in the while() header.\n"
+        "- Always include sleep() inside polling loops to avoid flooding ESP-NOW.\n\n"
+        "- read_sensor(id) -> number    read cached remote sensor value (id=module_id number OR peer name string; always single number, no list_get)\n"
         "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
         "- mic_level() -> number        local INMP441 microphone level, 0-100\n"
         "- buzzer_beep(id,count)->num   make remote buzzer beep count times; id can be number or peer name\n"
@@ -687,7 +690,7 @@ int llm_client_call(const char* ssid, const char* pass,
         ESP_LOGI(TAG, "STA not connected — connecting to %s", ssid);
         esp_wifi_set_mode(WIFI_MODE_APSTA);
         if (do_sta_connect(ssid, pass, 15000) != ESP_OK) {
-            finish_llm_network(local_proxy_mode);
+            /* network teardown moved to llm_client_finish_network() called by caller */
             return -1;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -722,7 +725,7 @@ int llm_client_call(const char* ssid, const char* pass,
     char* sys_prompt = (char*)malloc(sys_prompt_len);
     if (sys_prompt == NULL) {
         ESP_LOGE(TAG, "Failed to allocate system prompt buffer");
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
     build_system_prompt(sys_prompt, sys_prompt_len);
@@ -731,7 +734,7 @@ int llm_client_call(const char* ssid, const char* pass,
     cJSON* root = cJSON_CreateObject();
     if (root == NULL) {
         free(sys_prompt);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
@@ -766,7 +769,7 @@ int llm_client_call(const char* ssid, const char* pass,
     char* json_body = cJSON_PrintUnformatted(root);
     if (json_body == NULL) {
         cJSON_Delete(root);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
     cJSON_Delete(root);
@@ -831,7 +834,7 @@ int llm_client_call(const char* ssid, const char* pass,
     if (response == NULL) {
         free(json_body);
         ESP_LOGE(TAG, "Failed to allocate response buffer");
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
@@ -844,7 +847,7 @@ int llm_client_call(const char* ssid, const char* pass,
     if (http_err != ESP_OK) {
         free(response);
         ESP_LOGE(TAG, "HTTP request failed");
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
@@ -855,7 +858,7 @@ int llm_client_call(const char* ssid, const char* pass,
         ESP_LOGE(TAG, "Failed to parse LLM response JSON (%d bytes received)",
                  (int)strlen(response));
         free(response);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
     free(response);
@@ -864,35 +867,35 @@ int llm_client_call(const char* ssid, const char* pass,
     cJSON* choices = cJSON_GetObjectItem(resp_root, "choices");
     if (choices == NULL || cJSON_GetArraySize(choices) == 0) {
         cJSON_Delete(resp_root);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
     cJSON* choice0 = cJSON_GetArrayItem(choices, 0);
     if (choice0 == NULL) {
         cJSON_Delete(resp_root);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
     cJSON* message = cJSON_GetObjectItem(choice0, "message");
     if (message == NULL) {
         cJSON_Delete(resp_root);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
     cJSON* content = cJSON_GetObjectItem(message, "content");
     if (content == NULL || content->valuestring == NULL) {
         cJSON_Delete(resp_root);
-        finish_llm_network(local_proxy_mode);
+        /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
 
     // ---- 6. Extract script (strip markdown fences) ----
     extract_script_from_response(content->valuestring, script_out, max_len);
     cJSON_Delete(resp_root);
-    finish_llm_network(local_proxy_mode);
+    /* network teardown moved to llm_client_finish_network() called by caller */
 
     ESP_LOGI(TAG, "Extracted script (%d bytes): %s", (int)strlen(script_out), script_out);
 

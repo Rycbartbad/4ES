@@ -17,11 +17,21 @@ void env_init(Environment* env, Environment* parent)
 
 int env_define(Environment* env, const char* name, Value value)
 {
+    // Check if the name already exists in the CURRENT scope.
+    // If so, update in place — prevents binding accumulation when
+    // var is used inside loops (e.g. while(true) { var x = ... }).
+    for (int i = 0; i < env->count; i++) {
+        if (env->bindings[i].name == name) {
+            env->bindings[i].value = value;
+            return i;
+        }
+    }
+
     if (env->count >= MAX_BINDINGS) {
         return -1;  // full
     }
     int idx = env->count++;
-    env->bindings[idx].name = name;
+    env->bindings[idx].name  = name;
     env->bindings[idx].value = value;
     return idx;
 }

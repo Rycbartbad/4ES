@@ -70,6 +70,17 @@ int llm_client_call(const char* ssid, const char* pass,
                      const char* llm_model, const char* user_prompt,
                      char* script_out, int max_len);
 
+/**
+ * @brief Restore ESP-NOW channel and resume suspended tasks after LLM call.
+ *
+ * MUST be called after llm_client_call() returns (success or error), and
+ * MUST be called AFTER the HTTP response has been sent to avoid killing
+ * the SoftAP while the browser is still waiting.
+ *
+ * @param local_proxy_mode  true if the LLM URL points at a local proxy
+ */
+void llm_client_finish_network(bool local_proxy_mode);
+
 #ifdef __cplusplus
 }
 #endif
