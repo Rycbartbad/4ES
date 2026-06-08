@@ -569,7 +569,7 @@ return 语句通过 `ExecutionContext.has_returned` 传播: `execute_block` 每�
 
 | 签名 | 说明 |
 |------|------|
-| `read_sensor(pin)` → number | 读取本地 GPIO 传感器（LEDC/ADC） |
+| `read_sensor(id_or_name)` → number | 读取 LCD 同步缓存的远端传感器值（不占用 ESP-NOW 请求） |
 | `send_motor(pin, speed)` → void | 控制本地电机 (PWM) |
 | `digital_read(pin)` → number | GPIO 数字输入 |
 | `digital_write(pin, val)` → void | GPIO 数字输出 |
@@ -591,7 +591,7 @@ return 语句通过 `ExecutionContext.has_returned` 传播: `execute_block` 每�
 | `remote_read_min(id_list)` → number | 读取多个远程传感器并返回最小值 |
 | `list_free(lst)` → void | 显式释放列表槽位 |
 
-> **命名规则**: `read_sensor` 固定映射到本地硬件。远程读取统一用 `remote_read` 前缀，语义清晰无歧义。
+> **命名规则**: `read_sensor` 读取 LCD 同步缓存的远端传感器值（不占用 ESP-NOW 请求），适合高频轮询。`remote_read` 通过 ESP-NOW 实时读取，保证数据实时性。两者语义区分明确。
 
 所有接受模块标识的内置函数 (`peer_online`, `remote_read`, `espnow_send`) 同时支持数字 ID 和字符串名称两种参数。内部优先用字符串查找 peer，找不到再尝试数字 ID：
 
@@ -1051,7 +1051,7 @@ func average(a, b, c) {
 }
 
 while (true) {
-    var avg = average(read_sensor(1), read_sensor(2), read_sensor(3));  // 本地 GPIO 引脚 1/2/3
+    var avg = average(read_sensor("kitchen_temp"), read_sensor("living_temp"), read_sensor("bedroom_temp"));  // LCD 缓存远端值
     print(avg);
     sleep(2000);
 }
@@ -1075,7 +1075,7 @@ while (true) {
 var temps = list_new(5);
 var i = 0;
 while (i < list_len(temps)) {
-    list_set(temps, i, read_sensor(i + 1));  // 本地 GPIO 引脚
+    list_set(temps, i, read_sensor(i + 1));  // i+1 作为 module_id 读取 LCD 缓存值
     i = i + 1;
     sleep(500);
 }

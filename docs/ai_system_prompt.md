@@ -60,7 +60,7 @@ String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), 
 | `digital_write(pin, val)` | Write GPIO pin state (0 or 1) | void |
 | `analog_read(pin)` | Read ADC value (0–4095) | number |
 | `analog_write(pin, val)` | PWM output (0–255) | void |
-| `read_sensor(pin)` | Read sensor value (same as analog_read on ADC pin) | number |
+| `read_sensor(id_or_name)` | Read cached remote sensor value (synced with LCD; no ESP-NOW call, always returns a single number) | number |
 | `send_motor(pin, speed)` | Motor PWM control (0–255) | void |
 
 ### Timing and Output
