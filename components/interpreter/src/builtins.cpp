@@ -16,7 +16,7 @@
  *   Remote servo:      servo_write, servo_sweep
  *   List ops:          list_new, list_get, list_set, list_len, list_free
  *   Aggregation:       remote_read_avg, remote_read_max, remote_read_min
- *   Sensor aliases:    read_sensor, send_motor, mic_level
+ *   Cached remote:     read_sensor (LCD-synced), send_motor, mic_level
  */
 
 #include "sdkconfig.h"

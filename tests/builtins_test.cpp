@@ -183,11 +183,12 @@ static void test_bif_espnow_send(void) {
     TEST_PASS();
 }
 
-static void test_bif_read_sensor_alias(void) {
-    TEST("Builtin: read_sensor is alias for analog_read");
-    Value args[] = { v_num(3) };
+static void test_bif_read_sensor(void) {
+    TEST("Builtin: read_sensor returns cached remote sensor value");
+    Value args[] = { v_num(1) };
     Value r = call_bif("read_sensor", args, 1);
     TEST_ASSERT_EQUAL_INT(VAL_NUM, r.type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);  // no callback registered in test context
     TEST_PASS();
 }
 
