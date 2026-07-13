@@ -230,6 +230,33 @@ static bool check_args(const char* func, int arg_count, int required)
     return true;
 }
 
+// Surface a fuzzy device resolution to BOTH the ESP log and the Web Console
+// execution log, so the user can see which physical device a vague reference
+// ("舵机", "温度", ...) was mapped to — especially when several matched.
+static void report_type_resolution(const char* func, const char* query,
+                                   const char* type, const PeerEntry* tp,
+                                   int match_count)
+{
+    char line[128];
+    int len;
+    if (match_count > 1) {
+        len = snprintf(line, sizeof(line),
+            "[%s: \"%s\" -> %s (id=%u); %d '%s' devices online, using this one]\n",
+            func, query, tp->name, tp->module_id, match_count, type);
+        ESP_LOGW(TAG, "%s(\"%s\"): %d '%s' devices online, using id=%u (%s)",
+                 func, query, match_count, type, tp->module_id, tp->name);
+    } else {
+        len = snprintf(line, sizeof(line),
+            "[%s: \"%s\" -> %s (id=%u)]\n",
+            func, query, tp->name, tp->module_id);
+        ESP_LOGI(TAG, "%s(\"%s\") resolved by type '%s' -> id=%u (%s)",
+                 func, query, type, tp->module_id, tp->name);
+    }
+    if (len > 0 && g_print_callback != NULL) {
+        g_print_callback(line, len);
+    }
+}
+
 static bool resolve_module_id_arg(const char* func,
                                   const Value* arg,
                                   ExecutionContext* ctx,
@@ -258,6 +285,32 @@ static bool resolve_module_id_arg(const char* func,
         if (peer) {
             *module_id_out = peer->module_id;
             return true;
+        }
+
+        // Fuzzy fallback: the string is not an exact peer name, so treat it
+        // as a device TYPE / synonym ("舵机", "servo", "门铃", "温度", ...)
+        // and resolve to the matching online peer. This makes vague, id-less
+        // references work even when the model emits a type word as the id.
+        const char* type = peer_mgr_type_from_query(arg->str);
+        if (type) {
+            int match_count = 0;
+            PeerEntry* tp = peer_mgr_find_by_type(type, &match_count);
+
+            // A specific sensor sub-type ("温度"/"light"/...) may have no
+            // dedicated device online — fall back to any generic sensor so a
+            // single-sensor setup still responds.
+            if (tp == NULL &&
+                strcmp(type, "servo") != 0 &&
+                strcmp(type, "buzzer") != 0 &&
+                strcmp(type, "sensor") != 0) {
+                tp = peer_mgr_find_by_type("sensor", &match_count);
+            }
+
+            if (tp) {
+                report_type_resolution(func, arg->str, type, tp, match_count);
+                *module_id_out = tp->module_id;
+                return true;
+            }
         }
     }
 

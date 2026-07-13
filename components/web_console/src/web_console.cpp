@@ -411,8 +411,29 @@ static const char* s_html_page =
 " var r=await apiFetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})});"
 " btn.disabled=false;btn.classList.remove('btn-loading');"
 " if(!r){$('aiResult').textContent='Error calling LLM';return}"
+" if(r.status==='clarify'){showClarify(r);return}"
 " $('aiResult').textContent=r.status==='ok'?'Script injected successfully':'Error: '+(r.error||'unknown');"
 " if(r.script){$('scriptInput').value=r.script}"
+" setTimeout(fetchLog,500)"
+"}"
+"function showClarify(r){"
+" if(r.script){$('scriptInput').value=r.script}"
+" window._clarify=r;"
+" var opts=r.options||[];"
+" var h='<div>'+(r.question||'Which device?')+'</div>';"
+" for(var i=0;i<opts.length;i++){"
+"  h+='<button class=\"btn-success\" onclick=\"pickDevice('+opts[i].id+')\">'+opts[i].name+' (id '+opts[i].id+')</button> ';"
+" }"
+" $('aiResult').innerHTML=h;"
+"}"
+"async function pickDevice(id){"
+" var r=window._clarify;if(!r)return;"
+" var script=(r.script||'').split(r.placeholder).join(String(id));"
+" $('scriptInput').value=script;"
+" $('aiResult').textContent='Injecting on device '+id+'...';"
+" var res=await apiFetch('/api/script',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})});"
+" $('aiResult').textContent=(res&&res.status==='ok')?('Script injected on device '+id):('Error: '+((res&&res.error)||'unknown'));"
+" window._clarify=null;"
 " setTimeout(fetchLog,500)"
 "}"
 "async function injectScript(){"
@@ -940,9 +961,11 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
     }
     script[0] = '\0';
 
-    int ret = llm_client_call(wifi_ssid, wifi_pass,
-                              llm_url, llm_key, llm_model,
-                              prompt_copy, script, CONFIG_SCRIPT_MAX_LEN);
+    LlmClarify clarify;
+    int ret = llm_client_call_ex(wifi_ssid, wifi_pass,
+                                 llm_url, llm_key, llm_model,
+                                 prompt_copy, script, CONFIG_SCRIPT_MAX_LEN,
+                                 &clarify);
     free(prompt_copy);
 
     // ---- Send HTTP response BEFORE network teardown ----
@@ -966,7 +989,15 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
         return ESP_OK;
     }
 
-    // Build and send success response before WiFi restart
+    // A CLARIFY result means a device reference matched several online peers:
+    // return the candidates for the UI to pick, and do NOT inject yet. The
+    // script still holds the placeholder token; the UI fills it and re-injects
+    // via /api/script (no extra LLM call).
+    const bool need_clarify = (clarify.kind == LLM_RESULT_CLARIFY &&
+                               clarify.option_count > 0 &&
+                               clarify.placeholder[0] != '\0');
+
+    // Build and send response before WiFi restart
     {
         cJSON* resp = cJSON_CreateObject();
         if (resp == NULL) {
@@ -976,8 +1007,25 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
             llm_client_finish_network(local_proxy_mode);
             return ESP_OK;
         }
-        cJSON_AddStringToObject(resp, "status", "ok");
-        cJSON_AddStringToObject(resp, "script", script);
+        if (need_clarify) {
+            cJSON_AddStringToObject(resp, "status", "clarify");
+            cJSON_AddStringToObject(resp, "question", clarify.question);
+            cJSON_AddStringToObject(resp, "placeholder", clarify.placeholder);
+            cJSON_AddStringToObject(resp, "script", script);
+            cJSON* opts = cJSON_AddArrayToObject(resp, "options");
+            if (opts) {
+                for (int i = 0; i < clarify.option_count; i++) {
+                    cJSON* o = cJSON_CreateObject();
+                    if (o == NULL) break;
+                    cJSON_AddNumberToObject(o, "id", clarify.options[i].id);
+                    cJSON_AddStringToObject(o, "name", clarify.options[i].name);
+                    cJSON_AddItemToArray(opts, o);
+                }
+            }
+        } else {
+            cJSON_AddStringToObject(resp, "status", "ok");
+            cJSON_AddStringToObject(resp, "script", script);
+        }
 
         char* json = cJSON_PrintUnformatted(resp);
         cJSON_Delete(resp);
@@ -993,8 +1041,11 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
     // connection mid-request.
     llm_client_finish_network(local_proxy_mode);
 
-    // Inject script (WiFi is now on ESP-NOW channel)
-    script_inject_enqueue(script, (int)strlen(script));
+    // Inject script only when it is ready (WiFi is now on ESP-NOW channel).
+    // For a clarify result we wait for the user's device choice.
+    if (!need_clarify) {
+        script_inject_enqueue(script, (int)strlen(script));
+    }
     free(script);
     return ESP_OK;
 }

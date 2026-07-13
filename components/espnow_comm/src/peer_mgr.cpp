@@ -19,6 +19,7 @@
 #include "espnow_comm/peer_mgr.h"
 #include "esp_now.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_now.h"
@@ -554,6 +555,157 @@ PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict)
     if (out_conflict) *out_conflict = (match_count > 1);
     PEER_UNLOCK();
     return first_active ? first_active : first;
+}
+
+// ------------------------------------------------------------------
+// Canonical device-type resolution (fuzzy addressing helpers)
+// ------------------------------------------------------------------
+
+// Case-insensitive substring test (ASCII case folding only; multi-byte
+// UTF-8 sequences such as Chinese are compared byte-wise, which is exactly
+// what we want for literal synonym matching).
+static bool str_icontains(const char* hay, const char* needle)
+{
+    if (!hay || !needle || !needle[0]) return false;
+    size_t nlen = strlen(needle);
+    for (const char* p = hay; *p; p++) {
+        if (strncasecmp(p, needle, nlen) == 0) return true;
+    }
+    return false;
+}
+
+bool peer_mgr_matches_type(const PeerEntry* entry, const char* type)
+{
+    if (!entry || !type) return false;
+
+    // Search both the human name and the capability descriptor.
+    #define PEER_HAS(s) (str_icontains(entry->name, (s)) || \
+                         str_icontains(entry->capability, (s)))
+
+    // Actuators
+    if (strcmp(type, "servo") == 0) {
+        return PEER_HAS("servo");
+    }
+    if (strcmp(type, "buzzer") == 0) {
+        return PEER_HAS("buzzer") || PEER_HAS("doorbell") || PEER_HAS("beep");
+    }
+
+    // Sensor sub-types (specific) — let the model/interpreter pick the right
+    // sensor when several are online (e.g. "温度" vs "光照").
+    if (strcmp(type, "temperature") == 0) {
+        return PEER_HAS("temp");
+    }
+    if (strcmp(type, "humidity") == 0) {
+        return PEER_HAS("humid");
+    }
+    if (strcmp(type, "light") == 0) {
+        return PEER_HAS("light") || PEER_HAS("lux") || PEER_HAS("bh1750");
+    }
+    if (strcmp(type, "gas") == 0) {
+        return PEER_HAS("co2") || PEER_HAS("tvoc") || PEER_HAS("ch2o") ||
+               PEER_HAS("gas") || PEER_HAS("air")  || PEER_HAS("jw01");
+    }
+    if (strcmp(type, "rain") == 0) {
+        return PEER_HAS("rain");
+    }
+    if (strcmp(type, "vibration") == 0) {
+        return PEER_HAS("vibrat");
+    }
+
+    // Generic sensor (broad — matches any readable module)
+    if (strcmp(type, "sensor") == 0) {
+        return PEER_HAS("sensor") || PEER_HAS("remote_read") || PEER_HAS("adc");
+    }
+
+    #undef PEER_HAS
+    return false;
+}
+
+// -------------------------------------------------------------------------
+// Reference-word -> canonical-type synonym table.
+//
+// This is the ONE place to extend spoken / dialect / multilingual synonyms:
+// just add a { "word", "type" } row.  Matching is case-insensitive substring,
+// so "温度传感器现在多少" already contains "温度".
+//
+// ORDER MATTERS: more specific words (sensor sub-types) must appear BEFORE
+// the generic "sensor" / "传感器" row, so "温度传感器" resolves to
+// temperature rather than the generic sensor bucket.
+// -------------------------------------------------------------------------
+typedef struct {
+    const char* word;   // reference word (English or Chinese)
+    const char* type;   // canonical type tag
+} SynonymEntry;
+
+static const SynonymEntry kSynonyms[] = {
+    // actuators
+    { "servo", "servo" }, { "舵机", "servo" }, { "伺服", "servo" },
+    { "buzzer", "buzzer" }, { "doorbell", "buzzer" }, { "beeper", "buzzer" },
+    { "蜂鸣器", "buzzer" }, { "门铃", "buzzer" }, { "喇叭", "buzzer" },
+    // sensor sub-types (specific — keep before the generic sensor rows)
+    { "温度", "temperature" }, { "temperature", "temperature" }, { "temp", "temperature" },
+    { "湿度", "humidity" }, { "humidity", "humidity" }, { "humid", "humidity" },
+    { "光照", "light" }, { "亮度", "light" }, { "light", "light" }, { "lux", "light" },
+    { "气体", "gas" }, { "空气", "gas" }, { "gas", "gas" }, { "co2", "gas" },
+    { "雨", "rain" }, { "rain", "rain" },
+    { "振动", "vibration" }, { "vibration", "vibration" },
+    // generic sensor (keep last so specific types win)
+    { "传感器", "sensor" }, { "sensor", "sensor" },
+};
+
+const char* peer_mgr_type_from_query(const char* query)
+{
+    if (!query) return NULL;
+    for (size_t i = 0; i < sizeof(kSynonyms) / sizeof(kSynonyms[0]); i++) {
+        if (str_icontains(query, kSynonyms[i].word)) {
+            return kSynonyms[i].type;
+        }
+    }
+    return NULL;
+}
+
+void peer_mgr_type_tags(const PeerEntry* entry, char* out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!entry) return;
+
+    // Broad type(s) first, then any specific sensor sub-types the device
+    // supports, so the model can match "温度" to a multi-sensor module.
+    static const char* kTags[] = {
+        "servo", "buzzer", "sensor",
+        "temperature", "humidity", "light", "gas", "rain", "vibration"
+    };
+    size_t pos = 0;
+    for (size_t i = 0; i < sizeof(kTags) / sizeof(kTags[0]); i++) {
+        if (!peer_mgr_matches_type(entry, kTags[i])) continue;
+        int w = snprintf(out + pos, out_len - pos, "%s%s",
+                         pos ? "," : "", kTags[i]);
+        if (w < 0) break;
+        pos += (size_t)w;
+        if (pos >= out_len) { out[out_len - 1] = '\0'; break; }
+    }
+}
+
+PeerEntry* peer_mgr_find_by_type(const char* type, int* out_count)
+{
+    if (out_count) *out_count = 0;
+    if (!type) return NULL;
+
+    PEER_LOCK();
+    int match_count = 0;
+    PeerEntry* first = NULL;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        if (s_peers[i].state != PEER_ACTIVE) continue;
+        if (peer_mgr_matches_type(&s_peers[i], type)) {
+            match_count++;
+            if (first == NULL) first = &s_peers[i];
+        }
+    }
+    if (out_count) *out_count = match_count;
+    PEER_UNLOCK();
+    return first;
 }
 
 PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id)
