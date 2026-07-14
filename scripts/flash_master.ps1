@@ -18,25 +18,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$idf_path      = "d:\IDF_v5.2.6\v5.2.6\esp-idf"
-$tools_base    = "d:\IDF_v5.2.6\TOOLS_PATH\tools"
-$py_venv       = "D:\IDF_v5.2.6\TOOLS_PATH\python_env\idf5.2_py3.13_env\Scripts"
-$python        = "$py_venv\python.exe"
-$project_root  = Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent
 
-$env:IDF_PATH                = $idf_path
-$env:IDF_PYTHON_ENV_PATH     = "D:\IDF_v5.2.6\TOOLS_PATH\python_env\idf5.2_py3.13_env"
-$env:ESP_ROM_ELF_DIR         = "$idf_path\components\esp_rom\esp32s3"
-$env:PATH = @(
-    "$idf_path\tools",
-    "$tools_base\idf-exe\1.0.3",
-    "$tools_base\cmake\3.30.2\bin",
-    "$tools_base\ninja\1.12.1",
-    "$tools_base\xtensa-esp-elf\esp-13.2.0_20250707\xtensa-esp-elf\bin",
-    $py_venv,
-    $env:PATH
-) -join ";"
-
+. "$PSScriptRoot\idf_env.ps1"
+Initialize-IdfEnvironment -Chip esp32s3
 Set-Location -LiteralPath $project_root
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }

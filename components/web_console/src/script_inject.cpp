@@ -157,6 +157,12 @@ int script_inject_read_log(char* buf, int max_len)
 extern volatile bool s_script_abort_requested;
 
 /*
+ * Busy flag — true while exec_task is actively executing a script.
+ * Defined in app_main.cpp; set/cleared around the lex→parse→execute loop.
+ */
+extern volatile bool s_exec_task_busy;
+
+/*
  * Task handle for the peer timeout task — defined in app_main.cpp.
  * Suspended/resumed during Wi-Fi scanning.
  */
@@ -186,4 +192,13 @@ int script_inject_enqueue(const char* script, int len)
 volatile TaskHandle_t* script_inject_get_timeout_task_handle(void)
 {
     return &s_timeout_task_handle;
+}
+
+// ====================================================================
+// script_inject_is_running — true while exec_task is busy
+// ====================================================================
+
+bool script_inject_is_running(void)
+{
+    return s_exec_task_busy;
 }

@@ -76,6 +76,11 @@ static ExecutionContext s_ctx;
 volatile bool s_script_timeout = false;
 volatile bool s_script_abort_requested = false;
 
+// Set to true while exec_task is actively executing a script.
+// Cleared when exec_task returns to its wait-for-next-script state.
+// Referenced by script_inject_is_running() in script_inject.cpp.
+volatile bool s_exec_task_busy = false;
+
 // Task handle for timeout_task — referenced by web_console wifi_scan
 // (for suspend/resume during scan).  Defined here, declared extern in
 // script_inject.cpp.
@@ -345,6 +350,7 @@ static void exec_task(void* pv)
         // Reset must be visible cross-core before watchdog can fire.
         s_script_timeout        = false;
         s_script_abort_requested = false;
+        s_exec_task_busy         = true;
         __sync_synchronize();
 
         wdt = xTimerCreate("wd",
@@ -411,6 +417,8 @@ static void exec_task(void* pv)
         ast_pool_reset();
         ctx_reset(&s_ctx);
         s_script_abort_requested = false;
+        s_exec_task_busy         = false;
+        __sync_synchronize();
 
         ESP_LOGI(TAG, "Script done - ready for next");
     }

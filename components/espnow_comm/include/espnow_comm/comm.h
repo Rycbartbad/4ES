@@ -52,6 +52,12 @@ void espnow_comm_resume_rx(void);
 // Call after esp_wifi_start() + esp_wifi_set_channel().
 esp_err_t espnow_comm_reinit_espnow(void);
 
+// Align Wi-Fi channel and broadcast peer after SoftAP / channel changes.
+void espnow_comm_sync_rf(void);
+
+// Master-only: broadcast discovery so sensors re-announce immediately.
+void espnow_comm_send_discovery(void);
+
 #ifdef __cplusplus
 }
 #endif
