@@ -12,10 +12,43 @@
 
 #include "sdkconfig.h"
 #include "esp_err.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// ---------------------------------------------------------------------------
+// Function-calling result — hybrid tool-call path (design: local clarify)
+//
+// llm_client_call_ex() compiles the model's tool_calls into a DSL script.
+// When a device reference matches several online peers of the same type, it
+// cannot be resolved on the master without input, so the call returns a
+// CLARIFY result: the generated script contains a placeholder token where the
+// device id belongs, plus the list of candidate devices for the UI to offer.
+// The UI substitutes the chosen id into the placeholder and injects locally
+// via /api/script — no second LLM round-trip.
+// ---------------------------------------------------------------------------
+
+#define LLM_CLARIFY_MAX_OPTIONS 8
+
+typedef enum {
+    LLM_RESULT_SCRIPT  = 0,   // script_out is ready to inject as-is
+    LLM_RESULT_CLARIFY = 1,   // script_out has a placeholder; ask the user
+} LlmResultKind;
+
+typedef struct {
+    uint8_t id;
+    char    name[17];
+} LlmClarifyOption;
+
+typedef struct {
+    int  kind;                 // LlmResultKind
+    char question[128];        // human prompt, e.g. "Multiple servo devices..."
+    char placeholder[24];      // token in script_out to replace, e.g. "__DEVICE__"
+    int  option_count;
+    LlmClarifyOption options[LLM_CLARIFY_MAX_OPTIONS];
+} LlmClarify;
 
 /**
  * @brief Connect to configured Wi-Fi as STA.
@@ -79,6 +112,25 @@ int llm_client_call(const char* ssid, const char* pass,
                      const char* llm_url, const char* llm_key,
                      const char* llm_model, const char* user_prompt,
                      char* script_out, int max_len);
+
+/**
+ * @brief Like llm_client_call(), but uses DeepSeek function-calling and can
+ *        return a CLARIFY result when a device reference is ambiguous.
+ *
+ * On return 0, inspect clarify_out->kind:
+ *   - LLM_RESULT_SCRIPT : script_out is ready to inject.
+ *   - LLM_RESULT_CLARIFY: script_out contains clarify_out->placeholder where a
+ *                         device id must go; present clarify_out->options to
+ *                         the user and substitute the chosen id.
+ *
+ * @param clarify_out Out param (must be non-NULL) for the clarify result.
+ * @return 0 on success, -1 on error.
+ */
+int llm_client_call_ex(const char* ssid, const char* pass,
+                       const char* llm_url, const char* llm_key,
+                       const char* llm_model, const char* user_prompt,
+                       char* script_out, int max_len,
+                       LlmClarify* clarify_out);
 
 /**
  * @brief Restore ESP-NOW channel and resume suspended tasks after LLM call.

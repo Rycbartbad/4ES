@@ -418,17 +418,71 @@ static const char* s_html_page =
 "  badge.className='status-badge '+(r.script_running?'status-ok':'status-warn')"
 " }"
 "}"
+""
+"// ---- Polling scheduler with exponential back-off ----"
+"// Paused while an AI request is in flight to avoid noisy fetch errors."
+"var _poll={"
+" logTimer:null,statusTimer:null,"
+" logDelay:3000,statusDelay:5000,"
+" maxDelay:30000,paused:false"
+"};"
+"function _scheduleLog(){"
+" if(_poll.logTimer)clearTimeout(_poll.logTimer);"
+" if(_poll.paused)return;"
+" _poll.logTimer=setTimeout(async function(){"
+"  var ok=await fetchLog();"
+"  _poll.logDelay=ok?3000:Math.min(_poll.logDelay*2,_poll.maxDelay);"
+"  _scheduleLog()"
+" },_poll.logDelay)"
+"}"
+"function _scheduleStatus(){"
+" if(_poll.statusTimer)clearTimeout(_poll.statusTimer);"
+" if(_poll.paused)return;"
+" _poll.statusTimer=setTimeout(async function(){"
+"  await refreshStatus();"
+"  _scheduleStatus()"
+" },_poll.statusDelay)"
+"}"
+"function _pausePolling(){"
+" _poll.paused=true;"
+" if(_poll.logTimer){clearTimeout(_poll.logTimer);_poll.logTimer=null}"
+" if(_poll.statusTimer){clearTimeout(_poll.statusTimer);_poll.statusTimer=null}"
+"}"
+"function _resumePolling(){"
+" _poll.paused=false;"
+" _poll.logDelay=3000;"
+" _scheduleLog();_scheduleStatus()"
+"}"
+""
 "async function callAI(){"
 " var prompt=$('aiPrompt').value;"
 " if(!prompt.trim()){msg('Enter a command first','warn');return}"
 " var phoneMode=$('llm_route').value==='phone';"
 " if(!phoneMode)phonePhase='idle';"
+" if(!phoneMode){"
+"  var st=await apiFetch('/api/status');"
+"  if(!st)return;"
+"  if(!st.llm_configured){"
+"   msg('LLM not configured - please save API URL and Key first','warn');return"
+"  }"
+"  if(!st.wifi_configured&&!st.local_proxy){"
+"   msg('Router Wi-Fi not configured - please save SSID/password first so ESP32 can reach the LLM','warn');return"
+"  }"
+" }"
 " $('aiResult').textContent=phoneMode?'Preparing phone mobile-data flow...':'Calling LLM using ESP WiFi...';"
 " var btn=$('aiBtn');btn.disabled=true;btn.classList.add('btn-loading');"
+" _pausePolling();"
 " var r=phoneMode?await callAIFromPhoneFlow(prompt):await apiFetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})});"
 " btn.disabled=false;btn.classList.remove('btn-loading');"
-" if(!r){$('aiResult').textContent='Error calling LLM';return}"
+" if(!r){_resumePolling();$('aiResult').textContent='Error calling LLM';return}"
 " if(r.status==='pending'){$('aiResult').textContent=r.message;btn.textContent=r.button;return}"
+" _resumePolling();"
+" if(r.error&&r.error in{'Wi-Fi not configured':1,'LLM URL not configured':1,'LLM call failed':1,'No script in response':1}){"
+"  var errMap={'Wi-Fi not configured':'Router Wi-Fi not saved - configure it in the Wi-Fi section first','LLM URL not configured':'LLM URL not saved - configure it in the LLM section first','LLM call failed':'LLM call failed (check router connection and API key)','No script in response':'LLM returned no script - try rephrasing your command'};"
+"  msg(errMap[r.error]||r.error,'err');"
+"  $('aiResult').textContent='Error: '+(errMap[r.error]||r.error);return"
+" }"
+" if(r.status==='clarify'){showClarify(r);return}"
 " $('aiResult').textContent=r.status==='ok'?'Script injected successfully':'Error: '+(r.error||'unknown');"
 " btn.textContent='Generate & Inject';"
 " if(r.script){$('scriptInput').value=r.script}"
@@ -471,6 +525,26 @@ static const char* s_html_page =
 "  return {status:'pending',message:'Script generated. Re-enable WiFi, reconnect ESP-LEGO-Setup, then tap again to inject.',button:'3. Inject after reconnecting'};"
 " }catch(e){phonePhase='mobile';return {status:'pending',message:'Phone is still using ESP WiFi for internet. Keep this page open, turn WiFi off (mobile data stays on), then tap again.',button:'2. Generate with mobile data'}}"
 "}"
+"function showClarify(r){"
+" if(r.script){$('scriptInput').value=r.script}"
+" window._clarify=r;"
+" var opts=r.options||[];"
+" var h='<div>'+(r.question||'Which device?')+'</div>';"
+" for(var i=0;i<opts.length;i++){"
+"  h+='<button class=\"btn-success\" onclick=\"pickDevice('+opts[i].id+')\">'+opts[i].name+' (id '+opts[i].id+')</button> ';"
+" }"
+" $('aiResult').innerHTML=h;"
+"}"
+"async function pickDevice(id){"
+" var r=window._clarify;if(!r)return;"
+" var script=(r.script||'').split(r.placeholder).join(String(id));"
+" $('scriptInput').value=script;"
+" $('aiResult').textContent='Injecting on device '+id+'...';"
+" var res=await apiFetch('/api/script',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})});"
+" $('aiResult').textContent=(res&&res.status==='ok')?('Script injected on device '+id):('Error: '+((res&&res.error)||'unknown'));"
+" window._clarify=null;"
+" setTimeout(fetchLog,500)"
+"}"
 "async function injectScript(){"
 " var script=$('scriptInput').value;"
 " if(!script.trim()){msg('Enter a script first','warn');return}"
@@ -482,10 +556,11 @@ static const char* s_html_page =
 "async function fetchLog(){"
 " if(phonePhase==='mobile'||phonePhase==='reconnect')return;"
 " var r=await apiFetch('/api/exec_log');"
-" if(!r)return;"
+" if(!r)return false;"
 " var el=$('execLog');"
 " el.textContent=r.log||'(no output)';"
-" el.scrollTop=el.scrollHeight"
+" el.scrollTop=el.scrollHeight;"
+" return true"
 "}"
 "async function fetchLogAfterExecution(){"
 " var lastResult=null;"
@@ -502,10 +577,9 @@ static const char* s_html_page =
 "}"
 "async function init(){"
 " await loadConfig();"
-" refreshStatus();"
-" fetchLog();"
-" setInterval(fetchLog,3000);"
-" setInterval(refreshStatus,5000)"
+" await refreshStatus();"
+" await fetchLog();"
+" _scheduleLog();_scheduleStatus()"
 "}"
 "console.log('ESP-LEGO JS loaded');"
 "init()"
@@ -682,10 +756,11 @@ static esp_err_t status_get_handler(httpd_req_t* req)
     cJSON_AddBoolToObject(root, "llm_configured",
                           (strlen(llm_url) > 0) ? 1 : 0);
 
+    cJSON_AddBoolToObject(root, "local_proxy",
+                          llm_client_uses_local_proxy(llm_url) ? 1 : 0);
+
     cJSON_AddBoolToObject(root, "script_running",
-                          s_script_abort_requested ? 0 : 0);
-    // Note: true "script_running" check requires access to exec_task state.
-    // This is a best-effort indicator.
+                          script_inject_is_running() ? 1 : 0);
 
     char* json = cJSON_PrintUnformatted(root);
     if (json) {
@@ -1089,9 +1164,11 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
     }
     script[0] = '\0';
 
-    int ret = llm_client_call(wifi_ssid, wifi_pass,
-                              llm_url, llm_key, llm_model,
-                              prompt_copy, script, CONFIG_SCRIPT_MAX_LEN);
+    LlmClarify clarify;
+    int ret = llm_client_call_ex(wifi_ssid, wifi_pass,
+                                 llm_url, llm_key, llm_model,
+                                 prompt_copy, script, CONFIG_SCRIPT_MAX_LEN,
+                                 &clarify);
     free(prompt_copy);
 
     // ---- Send HTTP response BEFORE network teardown ----
@@ -1115,7 +1192,15 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
         return ESP_OK;
     }
 
-    // Build and send success response before WiFi restart
+    // A CLARIFY result means a device reference matched several online peers:
+    // return the candidates for the UI to pick, and do NOT inject yet. The
+    // script still holds the placeholder token; the UI fills it and re-injects
+    // via /api/script (no extra LLM call).
+    const bool need_clarify = (clarify.kind == LLM_RESULT_CLARIFY &&
+                               clarify.option_count > 0 &&
+                               clarify.placeholder[0] != '\0');
+
+    // Build and send response before WiFi restart
     {
         cJSON* resp = cJSON_CreateObject();
         if (resp == NULL) {
@@ -1125,8 +1210,25 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
             llm_client_finish_network(local_proxy_mode);
             return ESP_OK;
         }
-        cJSON_AddStringToObject(resp, "status", "ok");
-        cJSON_AddStringToObject(resp, "script", script);
+        if (need_clarify) {
+            cJSON_AddStringToObject(resp, "status", "clarify");
+            cJSON_AddStringToObject(resp, "question", clarify.question);
+            cJSON_AddStringToObject(resp, "placeholder", clarify.placeholder);
+            cJSON_AddStringToObject(resp, "script", script);
+            cJSON* opts = cJSON_AddArrayToObject(resp, "options");
+            if (opts) {
+                for (int i = 0; i < clarify.option_count; i++) {
+                    cJSON* o = cJSON_CreateObject();
+                    if (o == NULL) break;
+                    cJSON_AddNumberToObject(o, "id", clarify.options[i].id);
+                    cJSON_AddStringToObject(o, "name", clarify.options[i].name);
+                    cJSON_AddItemToArray(opts, o);
+                }
+            }
+        } else {
+            cJSON_AddStringToObject(resp, "status", "ok");
+            cJSON_AddStringToObject(resp, "script", script);
+        }
 
         char* json = cJSON_PrintUnformatted(resp);
         cJSON_Delete(resp);
@@ -1139,11 +1241,16 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
 
     // ---- Network teardown: WiFi restart + task resume ----
     // Must happen AFTER the HTTP response so the browser doesn't lose its
-    // connection mid-request.
+    // connection mid-request. A short delay lets lwIP flush the TCP send
+    // buffer before esp_wifi_stop() tears down the interface.
+    vTaskDelay(pdMS_TO_TICKS(100));
     llm_client_finish_network(local_proxy_mode);
 
-    // Inject script (WiFi is now on ESP-NOW channel)
-    script_inject_enqueue(script, (int)strlen(script));
+    // Inject script only when it is ready (WiFi is now on ESP-NOW channel).
+    // For a clarify result we wait for the user's device choice.
+    if (!need_clarify) {
+        script_inject_enqueue(script, (int)strlen(script));
+    }
     free(script);
     return ESP_OK;
 }
@@ -1270,20 +1377,49 @@ static esp_err_t catchall_405_handler(httpd_req_t *req, httpd_err_code_t error)
 }
 
 // ====================================================================
-// Captive portal probe handlers — minimal 204 No Content responses.
-// These are registered BEFORE the 404 error handler so they respond
-// immediately without going through the error-handler code path.
+// Captive portal probe handlers
+//
+// Goal: make the phone OS believe the AP has internet connectivity so
+// it does NOT auto-switch back to the user's home WiFi while the web
+// console is open.  Trade-off: the OS will NOT show an automatic
+// "Sign in to network" popup — users must open http://192.168.4.1
+// manually (acceptable since they already know the address).
+//
+// Three variants cover the major OS probe families:
+//   captive_204_handler  — Android & Chrome OS: expects 204 No Content
+//   captive_ios_handler  — Apple iOS/macOS:      expects 200 + "Success" body
+//   captive_ncsi_handler — Windows NCSI:         expects 200 + "Microsoft NCSI"
 // ====================================================================
 
-static esp_err_t captive_200_handler(httpd_req_t* req)
+static esp_err_t captive_204_handler(httpd_req_t* req)
 {
-    (void)req;
-    // 302 redirect to the web console root page.
-    // Tiny response (~80 bytes) sent instantly — no ECONNRESET.
-    // OS opens browser at http://192.168.4.1/ → full console page.
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "/");
+    // Android /generate_204 and related probes expect exactly HTTP 204
+    // with an empty body to conclude "internet is available".
+    httpd_resp_set_status(req, "204 No Content");
     httpd_resp_sendstr(req, "");
+    return ESP_OK;
+}
+
+static esp_err_t captive_ios_handler(httpd_req_t* req)
+{
+    // Apple CNA (Captive Network Assistant) probe.
+    // iOS/macOS GETs /hotspot-detect.html and checks for this exact body.
+    // Returning it causes the OS to mark the network as "internet available".
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+        "<HTML><HEAD><TITLE>Success</TITLE></HEAD>"
+        "<BODY>Success</BODY></HTML>");
+    return ESP_OK;
+}
+
+static esp_err_t captive_ncsi_handler(httpd_req_t* req)
+{
+    // Windows Network Connectivity Status Indicator probe.
+    // Expects HTTP 200 + body "Microsoft NCSI".
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Microsoft NCSI");
     return ESP_OK;
 }
 
@@ -1293,21 +1429,34 @@ static esp_err_t captive_200_handler(httpd_req_t* req)
 
 static const httpd_uri_t s_uris[] = {
     { .uri = "/",            .method = HTTP_GET,    .handler = root_get_handler,       .user_ctx = NULL },
-    // Captive portal probe URLs (respond fast — tiny 204 No Content)
-    { .uri = "/generate_204",.method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
-    { .uri = "/generate204", .method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
-    { .uri = "/mtuprobe",   .method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
-    { .uri = "/favicon.ico",.method = HTTP_GET,    .handler = captive_200_handler,    .user_ctx = NULL },
-    { .uri = "/api/status",  .method = HTTP_GET,    .handler = status_get_handler,      .user_ctx = NULL },
-    { .uri = "/api/config",      .method = HTTP_GET,    .handler = config_get_handler,          .user_ctx = NULL },
-    { .uri = "/api/config/wifi", .method = HTTP_POST,   .handler = config_wifi_post_handler,    .user_ctx = NULL },
-    { .uri = "/api/config/llm",  .method = HTTP_POST,   .handler = config_llm_post_handler,     .user_ctx = NULL },
-    { .uri = "/api/wifi/connect", .method = HTTP_POST, .handler = wifi_connect_post_handler, .user_ctx = NULL },
-    { .uri = "/api/scan",    .method = HTTP_GET,    .handler = scan_get_handler,        .user_ctx = NULL },
-    { .uri = "/api/ai/context", .method = HTTP_GET, .handler = ai_context_get_handler,  .user_ctx = NULL },
-    { .uri = "/api/ai",      .method = HTTP_POST,   .handler = ai_post_handler,         .user_ctx = NULL },
-    { .uri = "/api/script",  .method = HTTP_POST,   .handler = script_post_handler,     .user_ctx = NULL },
-    { .uri = "/api/exec_log",.method = HTTP_GET,    .handler = exec_log_get_handler,    .user_ctx = NULL },
+    // Android / Chrome OS connectivity probes — must return 204 No Content
+    { .uri = "/generate_204",            .method = HTTP_GET, .handler = captive_204_handler, .user_ctx = NULL },
+    { .uri = "/generate204",             .method = HTTP_GET, .handler = captive_204_handler, .user_ctx = NULL },
+    { .uri = "/mtuprobe",                .method = HTTP_GET, .handler = captive_204_handler, .user_ctx = NULL },
+
+    // Apple iOS / macOS CNA probes — must return 200 + "Success" body
+    { .uri = "/hotspot-detect.html",     .method = HTTP_GET, .handler = captive_ios_handler, .user_ctx = NULL },
+    { .uri = "/library/test/success.html",.method = HTTP_GET,.handler = captive_ios_handler, .user_ctx = NULL },
+    { .uri = "/success.txt",             .method = HTTP_GET, .handler = captive_ios_handler, .user_ctx = NULL },
+
+    // Windows NCSI probes — must return 200 + "Microsoft NCSI"
+    { .uri = "/ncsi.txt",                .method = HTTP_GET, .handler = captive_ncsi_handler,.user_ctx = NULL },
+    { .uri = "/connecttest.txt",         .method = HTTP_GET, .handler = captive_ncsi_handler,.user_ctx = NULL },
+
+    // Favicon — return 204 to avoid browser error (no icon served)
+    { .uri = "/favicon.ico",             .method = HTTP_GET, .handler = captive_204_handler, .user_ctx = NULL },
+
+    // Application API
+    { .uri = "/api/status",      .method = HTTP_GET,  .handler = status_get_handler,          .user_ctx = NULL },
+    { .uri = "/api/config",      .method = HTTP_GET,  .handler = config_get_handler,          .user_ctx = NULL },
+    { .uri = "/api/config/wifi", .method = HTTP_POST, .handler = config_wifi_post_handler,    .user_ctx = NULL },
+    { .uri = "/api/config/llm",  .method = HTTP_POST, .handler = config_llm_post_handler,     .user_ctx = NULL },
+    { .uri = "/api/wifi/connect",.method = HTTP_POST, .handler = wifi_connect_post_handler,   .user_ctx = NULL },
+    { .uri = "/api/scan",        .method = HTTP_GET,  .handler = scan_get_handler,            .user_ctx = NULL },
+    { .uri = "/api/ai/context",  .method = HTTP_GET,  .handler = ai_context_get_handler,      .user_ctx = NULL },
+    { .uri = "/api/ai",          .method = HTTP_POST, .handler = ai_post_handler,             .user_ctx = NULL },
+    { .uri = "/api/script",      .method = HTTP_POST, .handler = script_post_handler,         .user_ctx = NULL },
+    { .uri = "/api/exec_log",    .method = HTTP_GET,  .handler = exec_log_get_handler,        .user_ctx = NULL },
 };
 
 #define URI_COUNT (sizeof(s_uris) / sizeof(s_uris[0]))
@@ -1379,7 +1528,7 @@ static esp_err_t start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = 80;
     config.stack_size     = CONFIG_HTTP_SERVER_STACK_SIZE;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 24;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
 

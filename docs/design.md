@@ -1524,9 +1524,19 @@ API Request (OpenAI-compatible):
   }
 ```
 
-**响应解析**: 使用 `cJSON` 解析 LLM 返回的 JSON，通过 event_handler 在 `esp_http_client_perform()` 执行过程中实时捕获 `HTTP_EVENT_ON_DATA` 数据块，组合为完整响应体。提取 `choices[0].message.content` 字段内容，再通过 `extract_script_from_response()` 去除 markdown 代码块标记（` ``` `、` ```javascript ` 等），提取纯脚本代码。
+**响应解析**: 使用 `cJSON` 解析 LLM 返回的 JSON，通过 event_handler 在 `esp_http_client_perform()` 执行过程中实时捕获 `HTTP_EVENT_ON_DATA` 数据块，组合为完整响应体。优先解析 `choices[0].message.tool_calls`（见 §16.6.1）；若无工具调用，则回退到 `choices[0].message.content`，再通过 `extract_script_from_response()` 去除 markdown 代码块标记（` ``` `、` ```javascript ` 等），提取纯脚本代码。
 
 > **System Prompt 中的设备列表动态注入**: 每次调用 `/api/ai` 时，先调用 `list_peers()` 获取当前在线设备，拼入 System Prompt。确保 LLM 始终知道当前有哪些设备可用。
+
+### 16.6.1 混合 Function Calling + 本地消歧
+
+除 System Prompt 外，非本地代理模式下请求体额外携带一份 `tools` 工具 schema（`tool_choice:"auto"`），由 `llm_add_tools()` 注入。工具覆盖高频设备动作：`servo_write / servo_sweep / buzzer_beep / buzzer_note / buzzer_song / read_sensor`，以及一个兜底 `run_script(script)` 用于复杂/多步/循环逻辑。
+
+- **device 参数原样传递**: 工具的 `device` 参数为 string 或 number，模型直接透传用户的指代（id、精确 name、或类型词如 `servo`/`舵机`）。**不强制模型猜具体设备**，把消歧权交给掌握实时在线信息的主控。
+- **tool_calls → DSL**: `compile_tool_call()` 把每个工具调用编译成一行 DSL（如 `servo_write(2,90);`），复用现有解释器执行；`run_script` 则直接取其 `script` 字符串。无 `tool_calls` 时回退到 content 路径（兼容本地代理/不支持 tools 的模型）。
+- **本地消歧 (LLM_RESULT_CLARIFY)**: `resolve_device_literal()` 用 `peer_mgr_type_from_query()` + `peer_mgr_find_by_type()` 判断设备指代。唯一匹配→直接填入 id；匹配到多个同类设备→在脚本中留占位符 `__DEVICE__` 并把候选设备写入 `LlmClarify`，`/api/ai` 返回 `{"status":"clarify","question":...,"placeholder":"__DEVICE__","options":[{"id","name"}],"script":...}`，**不注入脚本**。
+
+网页收到 `clarify` 后渲染候选按钮；用户选择后，前端把 `script` 中的 `__DEVICE__` 替换为所选 id，直接 POST 到既有的 `/api/script` 注入执行——**不触发第二次 LLM 调用，也不再切 WiFi**。旧的 `llm_client_call()` 为兼容保留，遇到 clarify 时自动绑定第一个候选。
 
 ### 16.7 脚本切换机制
 

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -509,16 +510,41 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
 // Build system prompt — design.md §16.6
 // ====================================================================
 
+// Bounds-safe formatted append.  snprintf(buf+pos, max_len-pos, ...) is
+// unsafe once pos >= max_len because (max_len - pos) is negative and, cast
+// to size_t, becomes a huge value that lets snprintf write past the buffer.
+// This helper clamps pos so appends can never overflow and later text is
+// simply truncated instead of corrupting the heap.
+static void prompt_append(char* buf, int max_len, int* pos, const char* fmt, ...)
+{
+    if (buf == NULL || pos == NULL || *pos >= max_len - 1) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(buf + *pos, (size_t)(max_len - *pos), fmt, ap);
+    va_end(ap);
+    if (w < 0) {
+        return;
+    }
+    *pos += w;
+    if (*pos >= max_len) {
+        // vsnprintf already null-terminated within the buffer; clamp so the
+        // next call is a no-op instead of computing a negative size.
+        *pos = max_len - 1;
+    }
+}
+
 int llm_client_build_system_prompt(char* buf, int max_len)
 {
     int pos = 0;
 
     // Header
-    pos += snprintf(buf + pos, (size_t)(max_len - pos),
+    prompt_append(buf, max_len, &pos,
         "You are an ESP-LEGO device running a lightweight script interpreter.\n\n");
 
     // BNF Grammar (design.md §6.2)
-    pos += snprintf(buf + pos, (size_t)(max_len - pos),
+    prompt_append(buf, max_len, &pos,
         "BNF Grammar:\n"
         "program      = statement*\n"
         "statement    = var_decl | if_stmt | while_stmt | block | expr_stmt\n"
@@ -543,7 +569,7 @@ int llm_client_build_system_prompt(char* buf, int max_len)
 
     // Builtin functions (design.md §6.10)
     // Each entry: signature -> return_type   short description
-    pos += snprintf(buf + pos, (size_t)(max_len - pos),
+    prompt_append(buf, max_len, &pos,
         "Builtin functions:\n"
         "- digital_read(pin) -> number   0 (LOW) or 1 (HIGH), reads GPIO voltage level\n"
         "- digital_write(pin,val)-> void set GPIO: 0=LOW/off, 1=HIGH/on\n"
@@ -601,28 +627,49 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- User asks 'move servo 90,75,105,90 every 500ms and beep every second': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n"
         "- User asks '让 servo 舵机先转到 90 度，然后转到 75 度，再转到 105 度，最后回到 90 度，每一步间隔 500 毫秒。同时让蜂鸣器每隔一秒叫一声': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n\n");
 
-    // Online devices
-    pos += snprintf(buf + pos, (size_t)(max_len - pos),
-        "Online devices:\n");
+    // Device resolution — teach the model to map vague/fuzzy references
+    // (a device type or function word, with no id) to a concrete online peer.
+    // This is what lets "舵机怎么样" / "让蜂鸣器响一下" work without the user
+    // ever spelling out "id 为几的".
+    prompt_append(buf, max_len, &pos,
+        "Device resolution (IMPORTANT — resolve vague references yourself):\n"
+        "- Users usually name a device only by its TYPE or FUNCTION and give NO id, e.g. '舵机'(servo), '蜂鸣器'/'门铃'/'喇叭'(buzzer), '灯'(light), '传感器'/'温度'/'湿度'/'光照'/'气体'/'雨'(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.\n"
+        "- Each online device below is tagged with type=<servo|buzzer|sensor>. Match the user's word to a device by its type FIRST, then by name, then by capabilities text; call the builtin with that device's id or name.\n"
+        "- Synonyms to match: 舵机/伺服/servo -> type=servo (has servo_write); 蜂鸣器/门铃/喇叭/beeper/buzzer/doorbell -> type=buzzer (has buzzer_beep); 传感器/sensor and any measured quantity (温度/湿度/光照/气体/co2/雨/振动) -> type=sensor.\n"
+        "- If exactly ONE online device matches the type, use it even when the request is vague ('舵机转一下', '蜂鸣器响两声', '看看传感器').\n"
+        "- If SEVERAL devices match the same type, pick the one whose name the user mentioned; otherwise the FIRST matching device below, and add print(\"using <name>\"); so the user sees which device was chosen. Never ask to clarify.\n"
+        "- If NO device list is available, still emit the most likely builtin call using id=1.\n"
+        "- Vague verbs: for a SENSOR, '怎么样'/'看看'/'状态'/'读一下'/'现在多少' means read and print it, e.g. print(read_sensor(<id>)). For an ACTUATOR, a vague '怎么样'/'试一下'/'动一下'/'测试' means perform ONE short safe demo action: a servo -> servo_sweep(<id>,0,180,15,200); a buzzer -> buzzer_beep(<id>,2).\n"
+        "- When you pick a device, prefer calling it by its name string (e.g. servo_write(\"servo\",90)) so the mapping is explicit.\n\n");
+
+    // Online devices — each tagged with a canonical type= so the model can
+    // ground vague references (grounding step). peer_mgr_type_tags() derives
+    // the tag from the peer's name + capability so submodule firmware need
+    // not change.
+    prompt_append(buf, max_len, &pos, "Online devices:\n");
 
     int peer_count = 0;
     PeerEntry** peers = peer_mgr_list(&peer_count);
-    for (int i = 0; i < peer_count && pos < max_len - 160; i++) {
+    for (int i = 0; i < peer_count; i++) {
+        char type_tags[96];
+        peer_mgr_type_tags(peers[i], type_tags, sizeof(type_tags));
         const char* cap = peers[i]->capability;
         if (cap && cap[0]) {
-            pos += snprintf(buf + pos, (size_t)(max_len - pos),
-                "- id=%u, name=%s, capabilities: %s\n",
-                peers[i]->module_id, peers[i]->name, cap);
+            prompt_append(buf, max_len, &pos,
+                "- id=%u, name=%s, type=%s, capabilities: %s\n",
+                peers[i]->module_id, peers[i]->name,
+                type_tags[0] ? type_tags : "unknown", cap);
         } else {
-            pos += snprintf(buf + pos, (size_t)(max_len - pos),
-                "- id=%u, name=%s\n",
-                peers[i]->module_id, peers[i]->name);
+            prompt_append(buf, max_len, &pos,
+                "- id=%u, name=%s, type=%s\n",
+                peers[i]->module_id, peers[i]->name,
+                type_tags[0] ? type_tags : "unknown");
         }
     }
-    pos += snprintf(buf + pos, (size_t)(max_len - pos), "\n");
+    prompt_append(buf, max_len, &pos, "\n");
 
     // Resource limits
-    pos += snprintf(buf + pos, (size_t)(max_len - pos),
+    prompt_append(buf, max_len, &pos,
         "Resource limits:\n"
         "- Max 5000 remote_read() calls per script\n"
         "- Max 10000 loop iterations\n"
@@ -679,26 +726,214 @@ static void extract_script_from_response(const char* response, char* script_out,
 }
 
 // ====================================================================
-// llm_client_call — LLM round trip
+// Function-calling (tools) support — hybrid path
+// ====================================================================
+
+// Tool schema sent to DeepSeek. Kept as a parsed JSON literal for
+// readability. 'device' is intentionally string-or-number so the model can
+// pass the user's reference verbatim (id, exact name, or a type word like
+// "servo"/"舵机"), which is what lets the master do local disambiguation.
+static const char* TOOLS_JSON =
+"["
+"{\"type\":\"function\",\"function\":{\"name\":\"servo_write\",\"description\":\"Set a servo angle 0-180 degrees.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"],\"description\":\"device id, exact name, or type word (servo/舵机)\"},\"angle\":{\"type\":\"number\"}},\"required\":[\"device\",\"angle\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"servo_sweep\",\"description\":\"Sweep a servo between two angles; delay is ms between steps.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"from\":{\"type\":\"number\"},\"to\":{\"type\":\"number\"},\"step\":{\"type\":\"number\"},\"delay\":{\"type\":\"number\"}},\"required\":[\"device\",\"from\",\"to\",\"step\",\"delay\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_beep\",\"description\":\"Beep a buzzer count times.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"count\":{\"type\":\"number\"}},\"required\":[\"device\",\"count\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_note\",\"description\":\"Play one buzzer note. note:0=C4,12=C5,19=G5,24=C6,36=rest; dur ms.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"note\":{\"type\":\"number\"},\"dur\":{\"type\":\"number\"}},\"required\":[\"device\",\"note\",\"dur\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_song\",\"description\":\"Play a preset song: 0=twinkle,1=birthday,2=jingle.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"song\":{\"type\":\"number\"}},\"required\":[\"device\",\"song\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"read_sensor\",\"description\":\"Read and print a sensor value.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]}},\"required\":[\"device\"]}}},"
+"{\"type\":\"function\",\"function\":{\"name\":\"run_script\",\"description\":\"Run a full ESP-LEGO DSL script for complex, multi-step, conditional or looping logic.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\"}},\"required\":[\"script\"]}}}"
+"]";
+
+static void llm_add_tools(cJSON* root)
+{
+    cJSON* tools = cJSON_Parse(TOOLS_JSON);
+    if (tools) {
+        cJSON_AddItemToObject(root, "tools", tools);
+        cJSON_AddStringToObject(root, "tool_choice", "auto");
+    } else {
+        ESP_LOGW(TAG, "Failed to parse TOOLS_JSON; sending request without tools");
+    }
+}
+
+// In-place replace every occurrence of `from` with `to` in a bounded buffer.
+static void str_replace_all(char* buf, int buf_size, const char* from, const char* to)
+{
+    int flen = (int)strlen(from);
+    int tlen = (int)strlen(to);
+    if (flen == 0) return;
+    char* p;
+    while ((p = strstr(buf, from)) != NULL) {
+        int cur  = (int)strlen(buf);
+        int tail = (int)strlen(p + flen);
+        if (cur - flen + tlen >= buf_size) break;   // no room — stop
+        memmove(p + tlen, p + flen, (size_t)tail + 1);
+        memcpy(p, to, (size_t)tlen);
+    }
+}
+
+// Format a numeric tool argument as a script literal ("90", "0.5").
+static void num_arg_literal(cJSON* args, const char* key, char* out, int out_len)
+{
+    cJSON* v = args ? cJSON_GetObjectItem(args, key) : NULL;
+    double d = (v && cJSON_IsNumber(v)) ? v->valuedouble : 0.0;
+    snprintf(out, out_len, "%g", d);
+}
+
+// Record every ACTIVE peer matching `type` as a clarify option.
+static void fill_clarify_options(LlmClarify* clarify, const char* type)
+{
+    clarify->option_count = 0;
+    int count = 0;
+    PeerEntry** peers = peer_mgr_list(&count);
+    for (int i = 0; i < count && clarify->option_count < LLM_CLARIFY_MAX_OPTIONS; i++) {
+        if (!peer_mgr_matches_type(peers[i], type)) continue;
+        LlmClarifyOption* o = &clarify->options[clarify->option_count++];
+        o->id = peers[i]->module_id;
+        strncpy(o->name, peers[i]->name, sizeof(o->name) - 1);
+        o->name[sizeof(o->name) - 1] = '\0';
+    }
+}
+
+// Resolve a tool_call 'device' argument into a script literal.
+//   number            -> "2"
+//   exact peer name   -> "2"           (its id)
+//   unique type word  -> "2"           (the sole matching peer's id)
+//   ambiguous type    -> placeholder   (records candidates in `clarify`)
+//   otherwise         -> "\"raw\""     (runtime resolves or fails)
+static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
+                                   char clarify_type[16],
+                                   char* out, int out_len)
+{
+    if (device && cJSON_IsNumber(device)) {
+        snprintf(out, out_len, "%g", device->valuedouble);
+        return;
+    }
+
+    const char* s = (device && cJSON_IsString(device)) ? device->valuestring : NULL;
+    if (!s || !s[0]) {
+        snprintf(out, out_len, "1");   // no device given -> best-effort id 1
+        return;
+    }
+
+    bool conflict = false;
+    PeerEntry* p = peer_mgr_find_by_name(s, &conflict);
+    if (p && !conflict) {
+        snprintf(out, out_len, "%u", (unsigned)p->module_id);
+        return;
+    }
+
+    const char* type = peer_mgr_type_from_query(s);
+    if (type) {
+        int count = 0;
+        PeerEntry* tp = peer_mgr_find_by_type(type, &count);
+        if (count == 1 && tp) {
+            snprintf(out, out_len, "%u", (unsigned)tp->module_id);
+            return;
+        }
+        if (count > 1) {
+            if (clarify->kind != LLM_RESULT_CLARIFY) {
+                // Activate clarification for this device type.
+                clarify->kind = LLM_RESULT_CLARIFY;
+                strncpy(clarify_type, type, 15);
+                clarify_type[15] = '\0';
+                strncpy(clarify->placeholder, "__DEVICE__",
+                        sizeof(clarify->placeholder) - 1);
+                clarify->placeholder[sizeof(clarify->placeholder) - 1] = '\0';
+                snprintf(clarify->question, sizeof(clarify->question),
+                         "Multiple %s devices are online - which one?", type);
+                fill_clarify_options(clarify, type);
+                snprintf(out, out_len, "%s", clarify->placeholder);
+                return;
+            }
+            if (strcmp(clarify_type, type) == 0) {
+                snprintf(out, out_len, "%s", clarify->placeholder);
+                return;
+            }
+            // A second, different ambiguous type in the same request: degrade
+            // to the type word so the interpreter picks the first + logs it.
+            snprintf(out, out_len, "\"%s\"", s);
+            return;
+        }
+        // count == 0 -> no matching device online; keep the raw reference
+    }
+
+    snprintf(out, out_len, "\"%s\"", s);
+}
+
+// Compile one tool_call into a DSL statement appended to `script`.
+static void compile_tool_call(const char* fname, cJSON* args,
+                              char* script, int max_len, int* pos,
+                              LlmClarify* clarify, char clarify_type[16])
+{
+    if (strcmp(fname, "run_script") == 0) {
+        cJSON* s = args ? cJSON_GetObjectItem(args, "script") : NULL;
+        if (s && s->valuestring) {
+            prompt_append(script, max_len, pos, "%s\n", s->valuestring);
+        }
+        return;
+    }
+
+    cJSON* device = args ? cJSON_GetObjectItem(args, "device") : NULL;
+    char dev[24];
+    resolve_device_literal(device, clarify, clarify_type, dev, sizeof(dev));
+
+    char a[24], b[24], c[24], d[24];
+    if (strcmp(fname, "servo_write") == 0) {
+        num_arg_literal(args, "angle", a, sizeof(a));
+        prompt_append(script, max_len, pos, "servo_write(%s,%s);\n", dev, a);
+    } else if (strcmp(fname, "servo_sweep") == 0) {
+        num_arg_literal(args, "from",  a, sizeof(a));
+        num_arg_literal(args, "to",    b, sizeof(b));
+        num_arg_literal(args, "step",  c, sizeof(c));
+        num_arg_literal(args, "delay", d, sizeof(d));
+        prompt_append(script, max_len, pos, "servo_sweep(%s,%s,%s,%s,%s);\n",
+                      dev, a, b, c, d);
+    } else if (strcmp(fname, "buzzer_beep") == 0) {
+        num_arg_literal(args, "count", a, sizeof(a));
+        prompt_append(script, max_len, pos, "buzzer_beep(%s,%s);\n", dev, a);
+    } else if (strcmp(fname, "buzzer_note") == 0) {
+        num_arg_literal(args, "note", a, sizeof(a));
+        num_arg_literal(args, "dur",  b, sizeof(b));
+        prompt_append(script, max_len, pos, "buzzer_note(%s,%s,%s);\n", dev, a, b);
+    } else if (strcmp(fname, "buzzer_song") == 0) {
+        num_arg_literal(args, "song", a, sizeof(a));
+        prompt_append(script, max_len, pos, "buzzer_song(%s,%s);\n", dev, a);
+    } else if (strcmp(fname, "read_sensor") == 0) {
+        prompt_append(script, max_len, pos, "print(read_sensor(%s));\n", dev);
+    }
+    // Unknown tool name -> ignored.
+}
+
+// ====================================================================
+// llm_client_call_ex — LLM round trip with function-calling
 //
 // 1. Build system prompt (BNF + devices + builtins + constraints)
 // 2. Ensure STA is connected (connect if not)
-// 3. POST to LLM API (connection is reused)
-// 4. Parse response, extract script
-// 5. Disconnect STA and restore ESP-NOW channel before script injection
+// 3. POST to LLM API with a tools schema (skipped in local-proxy mode)
+// 4. Parse response: compile tool_calls -> DSL, else fall back to content
+// 5. Detect ambiguous device references -> CLARIFY result
 //
 // Returns 0 on success, -1 on error.
 // ====================================================================
 
-int llm_client_call(const char* ssid, const char* pass,
-                     const char* llm_url, const char* llm_key,
-                     const char* llm_model, const char* user_prompt,
-                     char* script_out, int max_len)
+int llm_client_call_ex(const char* ssid, const char* pass,
+                        const char* llm_url, const char* llm_key,
+                        const char* llm_model, const char* user_prompt,
+                        char* script_out, int max_len,
+                        LlmClarify* clarify_out)
 {
     if (!ssid || !llm_url || !llm_model || !user_prompt ||
         !script_out || max_len <= 0) {
         return -1;
     }
+
+    // Use the caller's clarify struct, or a local throwaway if not provided.
+    LlmClarify local_clarify;
+    LlmClarify* clarify = clarify_out ? clarify_out : &local_clarify;
+    clarify->kind         = LLM_RESULT_SCRIPT;
+    clarify->question[0]  = '\0';
+    clarify->placeholder[0] = '\0';
+    clarify->option_count = 0;
 
     const bool local_proxy_mode = llm_client_uses_local_proxy(llm_url);
 
@@ -767,7 +1002,7 @@ int llm_client_call(const char* ssid, const char* pass,
     // Heap-allocate a generous buffer (design.md's "no dynamic allocation"
     // rule does not apply here — the prompt contains BNF + builtins + device
     // list which can grow, and heap is already used extensively elsewhere).
-    const int sys_prompt_len = 6144;
+    const int sys_prompt_len = 8192;
     char* sys_prompt = (char*)malloc(sys_prompt_len);
     if (sys_prompt == NULL) {
         ESP_LOGE(TAG, "Failed to allocate system prompt buffer");
@@ -810,6 +1045,13 @@ int llm_client_call(const char* ssid, const char* pass,
         if (thinking) {
             cJSON_AddStringToObject(thinking, "type", "disabled");
         }
+    }
+
+    // Function-calling: offer device tools so the model emits structured
+    // calls we can validate and disambiguate locally. Skipped for local
+    // proxies, which may not support the OpenAI tools field.
+    if (!local_proxy_mode) {
+        llm_add_tools(root);
     }
 
     char* json_body = cJSON_PrintUnformatted(root);
@@ -931,21 +1173,80 @@ int llm_client_call(const char* ssid, const char* pass,
         return -1;
     }
 
-    cJSON* content = cJSON_GetObjectItem(message, "content");
-    if (content == NULL || content->valuestring == NULL) {
-        cJSON_Delete(resp_root);
-        /* network teardown moved to llm_client_finish_network() called by caller */
-        return -1;
+    // ---- 6. Extract script: prefer tool_calls, fall back to content ----
+    bool have_script = false;
+    char clarify_type[16] = "";
+
+    cJSON* tool_calls = cJSON_GetObjectItem(message, "tool_calls");
+    if (cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
+        int spos = 0;
+        script_out[0] = '\0';
+        int n = cJSON_GetArraySize(tool_calls);
+        for (int i = 0; i < n; i++) {
+            cJSON* tc = cJSON_GetArrayItem(tool_calls, i);
+            cJSON* fn = cJSON_GetObjectItem(tc, "function");
+            if (fn == NULL) continue;
+            cJSON* nm = cJSON_GetObjectItem(fn, "name");
+            cJSON* ar = cJSON_GetObjectItem(fn, "arguments");
+            if (nm == NULL || nm->valuestring == NULL) continue;
+            // 'arguments' is a JSON-encoded string per the OpenAI/DeepSeek spec.
+            cJSON* call_args = (ar && ar->valuestring)
+                                   ? cJSON_Parse(ar->valuestring) : NULL;
+            compile_tool_call(nm->valuestring, call_args, script_out, max_len,
+                              &spos, clarify, clarify_type);
+            if (call_args) cJSON_Delete(call_args);
+        }
+        have_script = (spos > 0);
     }
 
-    // ---- 6. Extract script (strip markdown fences) ----
-    extract_script_from_response(content->valuestring, script_out, max_len);
+    if (!have_script) {
+        // No usable tool_calls — use plain content (strips markdown fences).
+        // Covers local-proxy / non-tools models.
+        cJSON* content = cJSON_GetObjectItem(message, "content");
+        if (content && content->valuestring && content->valuestring[0]) {
+            extract_script_from_response(content->valuestring, script_out, max_len);
+            have_script = (script_out[0] != '\0');
+        }
+    }
+
     cJSON_Delete(resp_root);
     /* network teardown moved to llm_client_finish_network() called by caller */
 
-    ESP_LOGI(TAG, "Extracted script (%d bytes): %s", (int)strlen(script_out), script_out);
+    if (!have_script) {
+        ESP_LOGE(TAG, "LLM response had neither usable tool_calls nor content");
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "Generated script (%d bytes)%s: %s",
+             (int)strlen(script_out),
+             clarify->kind == LLM_RESULT_CLARIFY ? " [needs clarify]" : "",
+             script_out);
 
     // STA is disconnected above so ESP-NOW returns to the SoftAP channel
     // before /api/ai injects the generated script.
     return 0;
+}
+
+// ====================================================================
+// llm_client_call — backward-compatible wrapper (no clarify capability)
+//
+// Legacy callers that cannot ask the user still get a runnable script: any
+// ambiguous device placeholder is bound to the first candidate.
+// ====================================================================
+
+int llm_client_call(const char* ssid, const char* pass,
+                     const char* llm_url, const char* llm_key,
+                     const char* llm_model, const char* user_prompt,
+                     char* script_out, int max_len)
+{
+    LlmClarify clarify;
+    int r = llm_client_call_ex(ssid, pass, llm_url, llm_key, llm_model,
+                               user_prompt, script_out, max_len, &clarify);
+    if (r == 0 && clarify.kind == LLM_RESULT_CLARIFY &&
+        clarify.option_count > 0 && clarify.placeholder[0]) {
+        char idbuf[8];
+        snprintf(idbuf, sizeof(idbuf), "%u", (unsigned)clarify.options[0].id);
+        str_replace_all(script_out, max_len, clarify.placeholder, idbuf);
+    }
+    return r;
 }

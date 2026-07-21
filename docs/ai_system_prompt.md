@@ -168,6 +168,27 @@ print(servo_write("servo",90));
 
 > **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `servo_write`, `servo_sweep`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid.
 
+## Device Resolution (resolve vague references yourself)
+
+Users usually name a device only by its **type** or **function** and give **no id** — e.g. `舵机`(servo), `蜂鸣器`/`门铃`/`喇叭`(buzzer), `灯`(light), `传感器`/`温度`/`湿度`/`光照`/`气体`/`雨`(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.
+
+- **How to resolve**: every online device is tagged with `type=` (e.g. `servo`, `buzzer`, `sensor`, or a specific sensor kind like `sensor,temperature,humidity`). Match the user's word to a device by its **type** first, then by **name**, then by **capabilities** text, and call the builtin with that device's id or name.
+- **Synonyms**: `舵机`/`伺服`/`servo` → `type=servo` (has `servo_write`); `蜂鸣器`/`门铃`/`喇叭`/`beeper`/`buzzer`/`doorbell` → `type=buzzer` (has `buzzer_beep`); `传感器`/`sensor` and any measured quantity (`温度`/`湿度`/`光照`/`气体`/`co2`/`雨`/`振动`) → `type=sensor`.
+- **One match** → use it even when the request is vague (`舵机转一下`, `蜂鸣器响两声`, `看看传感器`).
+- **Several matches** → pick the one whose name the user mentioned; otherwise the **first** matching device, and add `print("using <name>");` so the user sees which one was chosen. Do not ask to clarify.
+- **No device list** → still emit the most likely builtin call using `id=1`.
+- **Vague verbs**: for a SENSOR, `怎么样`/`看看`/`状态`/`读一下`/`现在多少` means read and print it — `print(read_sensor(<id>))`. For an ACTUATOR, a vague `怎么样`/`试一下`/`动一下`/`测试` means ONE short safe demo: servo → `servo_sweep(<id>,0,180,15,200)`, buzzer → `buzzer_beep(<id>,2)`.
+- When you pick a device, prefer calling it by its **name** string (e.g. `servo_write("servo",90)`) so the mapping is explicit.
+
+## Function Calling (tools)
+
+When the application provides a `tools` schema (DeepSeek/OpenAI function calling), prefer emitting a **tool call** over writing a script for simple device actions:
+
+- Tools available: `servo_write`, `servo_sweep`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `read_sensor`, and a catch-all `run_script(script)` for complex, multi-step, conditional or looping logic.
+- Pass the `device` argument **verbatim** — the user's id, exact name, or a type word (`servo`/`舵机`/`温度`/...). Do NOT guess a concrete device when the reference is ambiguous; the master resolves it and, if several devices of that type are online, asks the user to pick. This is by design, so keep the reference as given.
+- Use `run_script` only when the request genuinely needs loops/conditions/sequencing that a single tool call cannot express.
+- If no tools are provided (older/local endpoints), fall back to writing a raw script as described above.
+
 ## Resource Constraints (HARD LIMITS)
 
 These limits are enforced at runtime and cannot be bypassed:

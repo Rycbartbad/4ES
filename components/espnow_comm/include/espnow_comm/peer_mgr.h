@@ -3,6 +3,7 @@
 #include "sdkconfig.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "freertos/FreeRTOS.h"
 
 #ifdef __cplusplus
@@ -56,6 +57,33 @@ PeerEntry* peer_mgr_find_by_mac(const uint8_t* mac, bool* out_conflict);
 PeerEntry* peer_mgr_find_by_id(uint8_t module_id, bool* out_conflict);
 PeerEntry* peer_mgr_find_by_name(const char* name, bool* out_conflict);
 PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id);
+
+// ------------------------------------------------------------------
+// Canonical device-type resolution (fuzzy addressing helpers)
+//
+// A user/LLM often refers to a device by its function word ("舵机",
+// "buzzer") with no id.  These helpers map such vague references to a
+// concrete peer, based on the peer's name + capability descriptor.
+// Canonical type tags are the literal strings "servo", "buzzer",
+// "sensor".
+// ------------------------------------------------------------------
+
+// True if `entry` can act as the given canonical type ("servo"/"buzzer"/
+// "sensor"), judged from its name and capability text.
+bool peer_mgr_matches_type(const PeerEntry* entry, const char* type);
+
+// Map a reference word (English or Chinese synonym, e.g. "舵机", "servo",
+// "门铃") to a canonical type tag, or NULL if it does not look like a type.
+const char* peer_mgr_type_from_query(const char* query);
+
+// Write a comma-separated list of the canonical types this peer supports
+// (e.g. "servo,sensor") into `out`. Always null-terminates.
+void peer_mgr_type_tags(const PeerEntry* entry, char* out, size_t out_len);
+
+// Find the first ACTIVE peer matching a canonical `type`. Sets *out_count
+// (may be NULL) to the number of ACTIVE peers of that type so callers can
+// detect ambiguity. Returns NULL if none match.
+PeerEntry* peer_mgr_find_by_type(const char* type, int* out_count);
 
 int         peer_mgr_active_count(void);
 int         peer_mgr_total_count(void);

@@ -63,6 +63,17 @@ int  script_inject_enqueue(const char* script, int len);
  */
 volatile TaskHandle_t* script_inject_get_timeout_task_handle(void);
 
+/**
+ * @brief Query whether exec_task is currently executing a script.
+ *
+ * Returns true from the moment exec_task starts lexing/parsing/executing
+ * until it finishes cleanup and returns to the dequeue-wait state.
+ * Safe to call from any task; backed by s_exec_task_busy in app_main.cpp.
+ *
+ * @return true if a script is actively running.
+ */
+bool script_inject_is_running(void);
+
 #ifdef __cplusplus
 }
 #endif
