@@ -43,13 +43,8 @@
 
 static const char* TAG = "builtins";
 
-// Remote sensor firmware buzzer command IDs. Keep these decimal-friendly in
-// prompt examples because the script lexer does not parse 0x hex literals.
-#define BUZZER_CMD_SONG 18
-#define BUZZER_CMD_NOTE 19
 #define BUZZER_NOTE_G5  19
 #define BUZZER_DEFAULT_MS 200
-#define SERVO_CMD_WRITE 32
 
 // ====================================================================
 // Value construction helpers (C++17-safe — no designated initializers)
@@ -975,7 +970,7 @@ static Value bif_buzzer_note(Value* args, int n, ExecutionContext* ctx)
         (uint8_t)((duration_ms >> 8) & 0xff),
         (uint8_t)(duration_ms & 0xff),
     };
-    esp_err_t err = espnow_comm_send_cmd(module_id, BUZZER_CMD_NOTE,
+    esp_err_t err = espnow_comm_send_cmd(module_id, CMD_BUZZER_NOTE,
                                          payload, sizeof(payload));
     return bval_num((double)err);
 }
@@ -1021,7 +1016,7 @@ static Value bif_buzzer_beep(Value* args, int n, ExecutionContext* ctx)
     };
 
     for (int i = 0; i < count; i++) {
-        last_err = espnow_comm_send_cmd(module_id, BUZZER_CMD_NOTE,
+        last_err = espnow_comm_send_cmd(module_id, CMD_BUZZER_NOTE,
                                         payload, sizeof(payload));
         if (i + 1 < count) {
             vTaskDelay(pdMS_TO_TICKS(duration_ms + 120));
@@ -1051,7 +1046,7 @@ static Value bif_buzzer_song(Value* args, int n, ExecutionContext* ctx)
     if (song_index > 2) song_index = 2;
 
     uint8_t payload[1] = { (uint8_t)song_index };
-    esp_err_t err = espnow_comm_send_cmd(module_id, BUZZER_CMD_SONG,
+    esp_err_t err = espnow_comm_send_cmd(module_id, CMD_BUZZER_SONG,
                                          payload, sizeof(payload));
     return bval_num((double)err);
 }
@@ -1076,7 +1071,7 @@ static Value bif_servo_write(Value* args, int n, ExecutionContext* ctx)
     if (angle > 180) angle = 180;
 
     uint8_t payload[1] = { (uint8_t)angle };
-    esp_err_t err = espnow_comm_send_cmd(module_id, SERVO_CMD_WRITE,
+    esp_err_t err = espnow_comm_send_cmd(module_id, CMD_SERVO_WRITE,
                                          payload, sizeof(payload));
     return bval_num((double)err);
 }
@@ -1116,7 +1111,7 @@ static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx)
     esp_err_t last_err = ESP_OK;
     for (int angle = from;; angle += step) {
         uint8_t payload[1] = { (uint8_t)angle };
-        last_err = espnow_comm_send_cmd(module_id, SERVO_CMD_WRITE,
+        last_err = espnow_comm_send_cmd(module_id, CMD_SERVO_WRITE,
                                         payload, sizeof(payload));
         if ((step > 0 && angle >= to) || (step < 0 && angle <= to)) {
             break;

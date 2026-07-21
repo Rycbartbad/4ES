@@ -87,7 +87,10 @@ PeerEntry* peer_mgr_find_by_type(const char* type, int* out_count);
 
 int         peer_mgr_active_count(void);
 int         peer_mgr_total_count(void);
+// Active peers only; used by command resolution and external control paths.
 PeerEntry** peer_mgr_list(int* count);
+// All registered peers, including OFFLINE entries; intended for status UIs.
+PeerEntry** peer_mgr_list_all(int* count);
 
 void peer_mgr_age_scan(TickType_t now);
 void peer_mgr_set_pending(PeerEntry* entry);

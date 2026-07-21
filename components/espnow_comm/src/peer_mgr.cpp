@@ -37,6 +37,7 @@ static SemaphoreHandle_t s_peer_mutex = NULL;
 
 // Active-list scratch buffer (returned by peer_mgr_list)
 static PeerEntry*       s_active_list[MAX_PEERS];
+static PeerEntry*       s_all_list[MAX_PEERS];
 
 // ------------------------------------------------------------------
 // Lock helpers
@@ -768,6 +769,21 @@ PeerEntry** peer_mgr_list(int* count)
     *count = idx;
     PEER_UNLOCK();
     return s_active_list;
+}
+
+PeerEntry** peer_mgr_list_all(int* count)
+{
+    if (count == NULL) return NULL;
+
+    PEER_LOCK();
+    int idx = 0;
+    for (int i = 0; i < MAX_PEERS && idx < MAX_PEERS; i++) {
+        if (ENTRY_IS_EMPTY(&s_peers[i])) continue;
+        s_all_list[idx++] = &s_peers[i];
+    }
+    *count = idx;
+    PEER_UNLOCK();
+    return s_all_list;
 }
 
 // ------------------------------------------------------------------

@@ -19,6 +19,13 @@ typedef enum {
     MSG_ACK        = 0x50,
 } MsgType;
 
+// Shared actuator command IDs.  Keep these in the wire protocol so the
+// Master, submodule firmware, and UI all describe the same commands.
+#define CMD_BUZZER_SONG    0x0012
+#define CMD_BUZZER_NOTE    0x0013
+#define CMD_BUZZER_MELODY  0x0014
+#define CMD_SERVO_WRITE    0x0020
+
 // ── Data exchange (msg_type-driven) ──
 // DATA_REQ → submodule reads ALL its sensors → replies DATA_RESP
 //            cmd_id is unused (set to 0), payload is empty.

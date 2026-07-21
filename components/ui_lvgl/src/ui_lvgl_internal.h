@@ -9,7 +9,7 @@
 
 #include "ui_lvgl/ui_sensor_model.h"
 
-#define UI_SENSOR_CARD_MAX 4
+#define UI_DEVICE_MAX CONFIG_MAX_PEERS
 #define UI_SENSOR_NAME_LEN 17
 #define UI_SENSOR_DATA_LEN 48
 #define UI_SENSOR_CAPABILITY_LEN 129
@@ -24,11 +24,12 @@ typedef struct {
     double values[UI_SENSOR_VALUE_MAX];
     int value_count;
     uint32_t last_update_ms;
-} UiSensorCard;
+} UiDeviceCard;
 
 typedef struct {
-    int total_sensor_count;
-    UiSensorCard sensors[UI_SENSOR_CARD_MAX];
+    int total_device_count;
+    int device_count;
+    UiDeviceCard devices[UI_DEVICE_MAX];
 } UiStatusState;
 
 void ui_screen_diag_create(UiStatusState* state);

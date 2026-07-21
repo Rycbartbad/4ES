@@ -147,11 +147,9 @@ static const uint32_t s_jb_durs[] = {
 };
 #define JB_COUNT (sizeof(s_jb_notes) / sizeof(s_jb_notes[0]))
 
-// ── Buzzer command IDs ──
-#define CMD_BUZZER_SONG  0x0012   // payload: [song_index]
-#define CMD_BUZZER_NOTE  0x0013   // payload: [note_id, dur_hi, dur_lo]
-#define CMD_BUZZER_MELODY 0x0014  // payload: [note1, dur1_hi, dur1_lo, note2, ...]
-                                   // note_id = semitone index: C4=0, C#4=1, ... B6=35, REST=36
+// Buzzer command IDs are shared in espnow_comm/protocol.h.
+// CMD_BUZZER_MELODY payload: [note1, dur1_hi, dur1_lo, note2, ...]
+// note_id = semitone index: C4=0, C#4=1, ... B6=35, REST=36
 
 // Note ID to frequency lookup (37 notes: C4-B6 with semitones + REST)
 // ID = semitone_index: C=0,C#=1,D=2,D#=3,E=4,F=5,F#=6,G=7,G#=8,A=9,A#=10,B=11
@@ -178,7 +176,7 @@ static const uint16_t s_note_freqs[] = {
 #define SERVO_MIN_PULSE_US      1000
 #define SERVO_MAX_PULSE_US      2000
 
-#define CMD_SERVO_WRITE         0x0020   // payload: [angle_0_180]
+// CMD_SERVO_WRITE is shared in espnow_comm/protocol.h.
 #endif // USE_SERVO
 
 // ====================================================================
@@ -660,6 +658,16 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
 // handle_cmd — execute GPIO command and send ACK (called from cmd_task)
 // ====================================================================
 
+static void send_command_ack(const uint8_t* dst_mac, uint8_t req_seq)
+{
+    uint8_t ack_buf[64];
+    size_t ack_len = 0;
+    protocol_build_ack(ack_buf, &ack_len, 0, req_seq);
+    if (ack_len > 0) {
+        esp_now_send(dst_mac, ack_buf, ack_len);
+    }
+}
+
 static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
                        uint16_t cmd_id,
                        const uint8_t* payload, int payload_len)
@@ -668,6 +676,7 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
     if (cmd_id == CMD_SERVO_WRITE) {
         if (payload_len >= 1) {
             servo_write_angle((int)payload[0]);
+            send_command_ack(src_mac, req_seq);
         } else {
             ESP_LOGW("sensor", "CMD_SERVO_WRITE short payload=%d", payload_len);
         }
@@ -678,41 +687,40 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
 #if USE_BUZZER
     // ── Buzzer commands ──
     if (cmd_id == CMD_BUZZER_SONG) {
-        if (payload_len >= 1) {
+        if (payload_len >= 1 && payload[0] <= SONG_JINGLE_BELLS) {
             buzzer_play_song(payload[0]);
+            send_command_ack(src_mac, req_seq);
         } else {
-            ESP_LOGW("sensor", "CMD_BUZZER_SONG short payload=%d", payload_len);
+            ESP_LOGW("sensor", "CMD_BUZZER_SONG invalid payload=%d", payload_len);
         }
         return;
     }
     if (cmd_id == CMD_BUZZER_NOTE) {
-        if (payload_len >= 3) {
+        if (payload_len >= 3 && payload[0] <= 36) {
             int note_id = (int)payload[0];
             uint16_t dur = ((uint16_t)payload[1] << 8) | payload[2];
             buzzer_note(note_id, dur);
+            send_command_ack(src_mac, req_seq);
         } else {
-            ESP_LOGW("sensor", "CMD_BUZZER_NOTE short payload=%d", payload_len);
+            ESP_LOGW("sensor", "CMD_BUZZER_NOTE invalid payload=%d", payload_len);
         }
         return;
     }
     if (cmd_id == CMD_BUZZER_MELODY) {
-        buzzer_melody_raw(payload, payload_len);
+        if (payload_len > 0 && payload_len % 3 == 0) {
+            buzzer_melody_raw(payload, payload_len);
+            send_command_ack(src_mac, req_seq);
+        } else {
+            ESP_LOGW("sensor", "CMD_BUZZER_MELODY invalid payload=%d", payload_len);
+        }
         return;
     }
 #endif
 
     // ── Default: GPIO write ──
     if (payload_len < 2) return;
-    uint8_t pin = payload[0];
-    uint8_t val = payload[1];
-    hw_gpio_write(pin, val);
-
-    uint8_t ack_buf[64];
-    size_t  ack_len = 0;
-    protocol_build_ack(ack_buf, &ack_len, 0, req_seq);
-    if (ack_len > 0) {
-        esp_now_send(src_mac, ack_buf, ack_len);
-    }
+    hw_gpio_write(payload[0], payload[1]);
+    send_command_ack(src_mac, req_seq);
 }
 
 // ====================================================================

@@ -58,17 +58,18 @@ void ui_peer_view_refresh(UiStatusState* state)
     memset(state, 0, sizeof(*state));
 
     int total = 0;
-    PeerEntry** peers = peer_mgr_list(&total);
+    PeerEntry** peers = peer_mgr_list_all(&total);
     int shown = total;
-    if (shown > UI_SENSOR_CARD_MAX) {
-        shown = UI_SENSOR_CARD_MAX;
+    if (shown > UI_DEVICE_MAX) {
+        shown = UI_DEVICE_MAX;
     }
 
-    state->total_sensor_count = total;
+    state->total_device_count = total;
+    state->device_count = shown;
 
     for (int i = 0; i < shown; i++) {
         const PeerEntry* peer = peers ? peers[i] : NULL;
-        UiSensorCard* card = &state->sensors[i];
+        UiDeviceCard* card = &state->devices[i];
         card->present = true;
         card->connected = (peer != NULL && peer->state == PEER_ACTIVE);
         card->module_id = peer ? peer->module_id : 0;
@@ -83,15 +84,4 @@ void ui_peer_view_refresh(UiStatusState* state)
                       card->data, sizeof(card->data));
     }
 
-    for (int i = shown; i < UI_SENSOR_CARD_MAX; i++) {
-        UiSensorCard* card = &state->sensors[i];
-        card->present = false;
-        card->connected = false;
-        card->module_id = 0;
-        static const char* empty_names[UI_SENSOR_CARD_MAX] = {
-            "sensor 1", "sensor 2", "sensor 3", "sensor 4",
-        };
-        copy_text(card->name, sizeof(card->name), empty_names[i]);
-        copy_text(card->data, sizeof(card->data), "--");
-    }
 }

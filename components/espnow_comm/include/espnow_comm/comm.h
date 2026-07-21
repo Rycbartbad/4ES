@@ -28,6 +28,35 @@ void      espnow_comm_handle_resp(const uint8_t* src_mac, const uint8_t* data, i
 // Send command (master → sensor)
 esp_err_t espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id, const uint8_t* payload, uint8_t payload_len);
 
+#define ESPNOW_COMMAND_PREVIEW_MAX 8
+
+typedef enum {
+    ESPNOW_COMMAND_NONE = 0,
+    ESPNOW_COMMAND_PENDING,
+    ESPNOW_COMMAND_CONFIRMED,
+    ESPNOW_COMMAND_SEND_FAILED,
+    ESPNOW_COMMAND_TIMED_OUT,
+} espnow_command_state_t;
+
+typedef struct {
+    bool valid;
+    uint8_t module_id;
+    uint8_t seq_id;
+    uint16_t cmd_id;
+    uint8_t payload[ESPNOW_COMMAND_PREVIEW_MAX];
+    uint8_t payload_len;
+    espnow_command_state_t state;
+    esp_err_t error;
+    uint32_t sent_at_ms;
+    uint32_t timeout_ms;
+} espnow_command_status_t;
+
+// Returns a snapshot of the latest command sent to one module.  Pending
+// commands are changed to TIMED_OUT when their command-specific deadline has
+// elapsed.  Returns false when no command has been sent to the module yet.
+bool espnow_comm_get_command_status(uint8_t module_id,
+                                   espnow_command_status_t* out_status);
+
 // Send announce (sensor → broadcast)
 void      espnow_comm_send_announce(void);
 

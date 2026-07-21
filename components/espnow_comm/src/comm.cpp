@@ -27,7 +27,9 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -76,6 +78,15 @@ static uint8_t  s_resp_expected_seq  = 0;
 static double   s_resp_values[DATA_RESP_MAX_VALUES];
 static int      s_resp_value_count   = 0;
 
+typedef struct {
+    bool in_use;
+    uint8_t mac[6];
+    espnow_command_status_t status;
+} command_record_t;
+
+static command_record_t s_command_records[CONFIG_MAX_PEERS];
+static portMUX_TYPE s_command_lock = portMUX_INITIALIZER_UNLOCKED;
+
 // Sensor-mode callback
 static espnow_recv_callback_t s_recv_callback = NULL;
 
@@ -92,6 +103,138 @@ static void  espnow_recv_cb(const esp_now_recv_info_t* info, const uint8_t* data
 static void  espnow_send_cb(const uint8_t* mac_addr, esp_now_send_status_t status);
 static void  rx_task(void* arg);
 static int   rx_process_one(void);
+
+static uint32_t command_now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static uint8_t next_sequence_id(void)
+{
+    taskENTER_CRITICAL(&s_command_lock);
+    const uint8_t seq_id = ++s_current_seq_id;
+    taskEXIT_CRITICAL(&s_command_lock);
+    return seq_id;
+}
+
+static uint32_t command_timeout_ms(uint16_t cmd_id,
+                                   const uint8_t* payload,
+                                   uint8_t payload_len)
+{
+    if (cmd_id == CMD_SERVO_WRITE) {
+        return 2000;
+    }
+    if (cmd_id == CMD_BUZZER_NOTE && payload != NULL && payload_len >= 3) {
+        const uint32_t duration = ((uint32_t)payload[1] << 8) | payload[2];
+        return duration + 2000;
+    }
+    if (cmd_id == CMD_BUZZER_SONG) {
+        return 30000;
+    }
+    if (cmd_id == CMD_BUZZER_MELODY && payload != NULL) {
+        uint32_t duration = 0;
+        for (uint8_t i = 0; i + 2 < payload_len; i = (uint8_t)(i + 3)) {
+            duration += ((uint32_t)payload[i + 1] << 8) | payload[i + 2];
+            duration += 20;
+        }
+        duration += 2000;
+        return duration > 60000 ? 60000 : duration;
+    }
+    return 5000;
+}
+
+static command_record_t* find_command_record_locked(uint8_t module_id)
+{
+    command_record_t* free_slot = NULL;
+    command_record_t* oldest = &s_command_records[0];
+    for (int i = 0; i < CONFIG_MAX_PEERS; i++) {
+        command_record_t* record = &s_command_records[i];
+        if (record->in_use && record->status.module_id == module_id) {
+            return record;
+        }
+        if (!record->in_use && free_slot == NULL) {
+            free_slot = record;
+        }
+        if (record->status.sent_at_ms < oldest->status.sent_at_ms) {
+            oldest = record;
+        }
+    }
+    return free_slot != NULL ? free_slot : oldest;
+}
+
+static void command_record_start(uint8_t module_id, uint8_t seq_id,
+                                 uint16_t cmd_id, const uint8_t* payload,
+                                 uint8_t payload_len)
+{
+    taskENTER_CRITICAL(&s_command_lock);
+    command_record_t* record = find_command_record_locked(module_id);
+    memset(record, 0, sizeof(*record));
+    record->in_use = true;
+    record->status.valid = true;
+    record->status.module_id = module_id;
+    record->status.seq_id = seq_id;
+    record->status.cmd_id = cmd_id;
+    record->status.state = ESPNOW_COMMAND_PENDING;
+    record->status.error = ESP_OK;
+    record->status.sent_at_ms = command_now_ms();
+    record->status.timeout_ms = command_timeout_ms(cmd_id, payload, payload_len);
+    record->status.payload_len = payload_len > ESPNOW_COMMAND_PREVIEW_MAX
+                                     ? ESPNOW_COMMAND_PREVIEW_MAX
+                                     : payload_len;
+    if (payload != NULL && record->status.payload_len > 0) {
+        memcpy(record->status.payload, payload, record->status.payload_len);
+    }
+    taskEXIT_CRITICAL(&s_command_lock);
+}
+
+static void command_record_set_mac(uint8_t module_id, uint8_t seq_id,
+                                   const uint8_t* mac)
+{
+    if (mac == NULL) return;
+    taskENTER_CRITICAL(&s_command_lock);
+    command_record_t* record = find_command_record_locked(module_id);
+    if (record->in_use && record->status.seq_id == seq_id) {
+        memcpy(record->mac, mac, sizeof(record->mac));
+    }
+    taskEXIT_CRITICAL(&s_command_lock);
+}
+
+static void command_record_fail(uint8_t module_id, uint8_t seq_id,
+                                esp_err_t error)
+{
+    taskENTER_CRITICAL(&s_command_lock);
+    command_record_t* record = find_command_record_locked(module_id);
+    if (record->in_use && record->status.seq_id == seq_id) {
+        record->status.state = ESPNOW_COMMAND_SEND_FAILED;
+        record->status.error = error;
+    }
+    taskEXIT_CRITICAL(&s_command_lock);
+}
+
+static void command_record_confirm(const uint8_t* mac, uint8_t seq_id)
+{
+    if (mac == NULL) return;
+    const uint32_t now_ms = command_now_ms();
+    taskENTER_CRITICAL(&s_command_lock);
+    for (int i = 0; i < CONFIG_MAX_PEERS; i++) {
+        command_record_t* record = &s_command_records[i];
+        if (!record->in_use || record->status.seq_id != seq_id ||
+            memcmp(record->mac, mac, sizeof(record->mac)) != 0 ||
+            record->status.state != ESPNOW_COMMAND_PENDING) {
+            continue;
+        }
+        if ((uint32_t)(now_ms - record->status.sent_at_ms) >
+            record->status.timeout_ms) {
+            record->status.state = ESPNOW_COMMAND_TIMED_OUT;
+            record->status.error = ESP_ERR_TIMEOUT;
+        } else {
+            record->status.state = ESPNOW_COMMAND_CONFIRMED;
+            record->status.error = ESP_OK;
+        }
+        break;
+    }
+    taskEXIT_CRITICAL(&s_command_lock);
+}
 
 static esp_err_t ensure_espnow_peer_registered(const uint8_t* mac)
 {
@@ -454,6 +597,9 @@ void espnow_comm_deinit(void)
 
     s_recv_callback = NULL;
     s_resp_pending = false;
+    taskENTER_CRITICAL(&s_command_lock);
+    memset(s_command_records, 0, sizeof(s_command_records));
+    taskEXIT_CRITICAL(&s_command_lock);
 
     ESP_LOGI(TAG, "ESP-NOW comm deinitialized");
 }
@@ -583,6 +729,7 @@ static int rx_process_one(void)
         break;
 
     case MSG_ACK:
+        command_record_confirm(item.src_mac, hdr.seq_id);
         ESP_LOGD(TAG, "ACK seq=%u from " MACSTR, hdr.seq_id, MAC2STR(item.src_mac));
         break;
 
@@ -631,19 +778,23 @@ esp_err_t espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id,
     uint8_t buf[250];
     size_t  len = 0;
 
-    s_current_seq_id++;
-    protocol_build_cmd(buf, &len, module_id, s_current_seq_id,
+    const uint8_t seq_id = next_sequence_id();
+    command_record_start(module_id, seq_id, cmd_id, payload, payload_len);
+    protocol_build_cmd(buf, &len, module_id, seq_id,
                        cmd_id, payload, payload_len);
 
     // Find target peer
     PeerEntry* peer = peer_mgr_find_by_id(module_id, NULL);
     if (peer == NULL) {
         ESP_LOGW(TAG, "send_cmd: peer module_id=%u not found", module_id);
+        command_record_fail(module_id, seq_id, ESP_ERR_NOT_FOUND);
         return ESP_ERR_NOT_FOUND;
     }
+    command_record_set_mac(module_id, seq_id, peer->mac);
 
     esp_err_t peer_ret = ensure_espnow_peer_registered(peer->mac);
     if (peer_ret != ESP_OK) {
+        command_record_fail(module_id, seq_id, peer_ret);
         return peer_ret;
     }
 
@@ -654,8 +805,41 @@ esp_err_t espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id,
     esp_err_t ret = esp_now_send(peer->mac, buf, len);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "send_cmd to module_id=%u failed: %d", module_id, ret);
+        command_record_fail(module_id, seq_id, ret);
     }
     return ret;
+}
+
+bool espnow_comm_get_command_status(uint8_t module_id,
+                                   espnow_command_status_t* out_status)
+{
+    if (out_status == NULL) {
+        return false;
+    }
+
+    bool found = false;
+    const uint32_t now_ms = command_now_ms();
+    taskENTER_CRITICAL(&s_command_lock);
+    for (int i = 0; i < CONFIG_MAX_PEERS; i++) {
+        command_record_t* record = &s_command_records[i];
+        if (!record->in_use || record->status.module_id != module_id) {
+            continue;
+        }
+        if (record->status.state == ESPNOW_COMMAND_PENDING &&
+            (uint32_t)(now_ms - record->status.sent_at_ms) >
+                record->status.timeout_ms) {
+            record->status.state = ESPNOW_COMMAND_TIMED_OUT;
+            record->status.error = ESP_ERR_TIMEOUT;
+        }
+        *out_status = record->status;
+        found = true;
+        break;
+    }
+    taskEXIT_CRITICAL(&s_command_lock);
+    if (!found) {
+        memset(out_status, 0, sizeof(*out_status));
+    }
+    return found;
 }
 
 // ----------------------------------------------------------------
@@ -753,8 +937,7 @@ int espnow_comm_request_read(uint8_t module_id, double* out_values, int max_valu
 
     for (int retry = 0; retry < 3; retry++) {
         // Each retry gets a new seq_id (design.md §7.3)
-        s_current_seq_id++;
-        uint8_t seq_id = s_current_seq_id;
+        uint8_t seq_id = next_sequence_id();
 
         uint8_t buf[250];
         size_t  len = 0;

@@ -46,7 +46,7 @@ typedef struct {
     ui_sensor_history_t history;
 } UiSensorValues;
 
-static UiSensorValues s_sensor_values[UI_SENSOR_CARD_MAX];
+static UiSensorValues s_sensor_values[UI_DEVICE_MAX];
 static portMUX_TYPE s_sensor_values_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void lcd_write_lvgl_colors(const lv_color_t* colors, uint32_t count)
@@ -148,7 +148,7 @@ static void store_sensor_values(uint8_t module_id, const double* values,
 
     taskENTER_CRITICAL(&s_sensor_values_lock);
     int slot = -1;
-    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+    for (int i = 0; i < UI_DEVICE_MAX; i++) {
         if (s_sensor_values[i].in_use &&
             s_sensor_values[i].module_id == module_id) {
             slot = i;
@@ -191,7 +191,7 @@ int ui_lvgl_copy_sensor_snapshot(uint8_t module_id, double* out_values,
 
     int copied = 0;
     taskENTER_CRITICAL(&s_sensor_values_lock);
-    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+    for (int i = 0; i < UI_DEVICE_MAX; i++) {
         if (!s_sensor_values[i].in_use ||
             s_sensor_values[i].module_id != module_id) {
             continue;
@@ -219,7 +219,7 @@ int ui_lvgl_copy_sensor_history(uint8_t module_id, int value_index,
 {
     int copied = 0;
     taskENTER_CRITICAL(&s_sensor_values_lock);
-    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+    for (int i = 0; i < UI_DEVICE_MAX; i++) {
         if (s_sensor_values[i].in_use &&
             s_sensor_values[i].module_id == module_id) {
             copied = ui_sensor_history_copy_metric(
@@ -238,7 +238,7 @@ static bool claim_sensor_poll(uint8_t module_id, uint32_t now_ms,
     bool due = false;
     taskENTER_CRITICAL(&s_sensor_values_lock);
     int slot = -1;
-    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+    for (int i = 0; i < UI_DEVICE_MAX; i++) {
         if (s_sensor_values[i].in_use &&
             s_sensor_values[i].module_id == module_id) {
             slot = i;
@@ -295,8 +295,8 @@ static void sensor_poll_task(void* arg)
     while (1) {
         int count = 0;
         PeerEntry** peers = peer_mgr_list(&count);
-        if (count > UI_SENSOR_CARD_MAX) {
-            count = UI_SENSOR_CARD_MAX;
+        if (count > UI_DEVICE_MAX) {
+            count = UI_DEVICE_MAX;
         }
 
         const uint8_t selected_module = ui_screen_diag_selected_module();
@@ -304,6 +304,9 @@ static void sensor_poll_task(void* arg)
         bool requested = false;
         for (int i = 0; i < count; i++) {
             if (peers == NULL || peers[i] == NULL) {
+                continue;
+            }
+            if (peers[i]->state != PEER_ACTIVE) {
                 continue;
             }
             if (!ui_sensor_capability_has_measurements(peers[i]->capability)) {
