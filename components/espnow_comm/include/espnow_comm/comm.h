@@ -31,6 +31,11 @@ esp_err_t espnow_comm_send_cmd(uint8_t module_id, uint16_t cmd_id, const uint8_t
 // Send announce (sensor → broadcast)
 void      espnow_comm_send_announce(void);
 
+// Master discovery broadcast and radio-channel reconciliation.  These are
+// used after SoftAP/channel transitions to bring ESP-NOW peers back online.
+void      espnow_comm_send_discovery(void);
+void      espnow_comm_sync_rf(void);
+
 // Callback for received CMD/DATA_REQ (sensor mode)
 typedef void (*espnow_recv_callback_t)(const uint8_t* src_mac, uint8_t msg_type,
                                        const uint8_t* data, int len);

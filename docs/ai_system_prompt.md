@@ -70,6 +70,9 @@ String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), 
 | `sleep(ms)` | Delay for ms milliseconds | void |
 | `print(val)` | Print value to console/log (accepts any type) | void |
 
+The `+` operator concatenates strings with numbers and booleans. For example,
+`print("Temperature: " + temp);` prints a readable label and numeric value.
+
 ### Remote Sensor Functions
 
 | Function | Description | Returns |

@@ -315,20 +315,29 @@ void espnow_comm_sync_rf(void)
     uint8_t want_ch = 1;
 #endif
 
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_err_t err = esp_wifi_get_channel(&primary, &second);
 
-    esp_err_t err = esp_wifi_set_channel(want_ch, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %d", want_ch, err);
+    wifi_ps_type_t current_ps = WIFI_PS_NONE;
+    if (esp_wifi_get_ps(&current_ps) != ESP_OK || current_ps != WIFI_PS_NONE) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+
+    // Do not ask the driver to change to the channel it is already using.
+    // With a phone connected to the SoftAP, even this no-op request is
+    // rejected and takes the deeper Wi-Fi error/logging path every 3 seconds.
+    if (err != ESP_OK || primary != want_ch) {
+        err = esp_wifi_set_channel(want_ch, WIFI_SECOND_CHAN_NONE);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %d", want_ch, err);
+        } else {
+            primary = want_ch;
+            ESP_LOGI(TAG, "RF channel restored to %u", want_ch);
+        }
     }
 
     ensure_broadcast_peer();
-
-    uint8_t primary = 0;
-    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
-    if (esp_wifi_get_channel(&primary, &second) == ESP_OK) {
-        ESP_LOGI(TAG, "RF synced: primary ch %u (target %u)", primary, want_ch);
-    }
 }
 
 void espnow_comm_send_discovery(void)

@@ -264,10 +264,15 @@ static const char* s_html_page =
 "</div>"
 "<label>Model</label>"
 "<input id=\"llm_model\" placeholder=\"gpt-4o-mini\">"
+"<label>Generate Using</label>"
+"<select id=\"llm_route\">"
+"<option value=\"phone\">Phone mobile data (recommended)</option>"
+"<option value=\"device\">ESP Wi-Fi connection</option>"
+"</select>"
 "<div class=\"btn-row\">"
 "<button class=\"btn-primary\" onclick=\"saveLlmConfig()\">Save</button>"
 "</div>"
-"<div class=\"info\">OpenAI-compatible endpoint. Key stored in device flash.</div>"
+"<div class=\"info\">Phone mode keeps ESP Wi-Fi mode available. If mobile fetch is blocked: keep this page open, turn Wi-Fi off, generate over mobile data, then reconnect ESP-LEGO-Setup to inject.</div>"
 "</div>"
 ""
 "<div class=\"card\">"
@@ -305,6 +310,9 @@ static const char* s_html_page =
 "<script>"
 "try{document.getElementById('jstest').textContent='JS OK';}catch(e){}"
 "const BASE='';"
+"var phoneContext=null;"
+"var pendingPhoneScript='';"
+"var phonePhase='idle';"
 "function $(id){return document.getElementById(id)}"
 "function msg(text,type){"
 " var bar=$('statusBar');"
@@ -339,7 +347,10 @@ static const char* s_html_page =
 "  llm_model:$('llm_model').value"
 " };"
 " var r=await apiFetch('/api/config/llm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});"
-" if(r)msg('LLM config saved','ok')"
+" if(r){"
+"  try{localStorage.setItem('espLlmKey',body.llm_key);localStorage.setItem('espLlmRoute',$('llm_route').value)}catch(e){}"
+"  msg('LLM config saved','ok')"
+" }"
 "}"
 "async function loadConfig(){"
 " var r=await apiFetch('/api/config');"
@@ -347,6 +358,9 @@ static const char* s_html_page =
 " $('wifi_ssid').value=r.wifi_ssid||'';"
 " $('llm_url').value=r.llm_url||'';"
 " $('llm_model').value=r.llm_model||'';"
+" try{$('llm_key').value=localStorage.getItem('espLlmKey')||'';$('llm_route').value=localStorage.getItem('espLlmRoute')||'phone'}catch(e){}"
+" try{pendingPhoneScript=localStorage.getItem('espPendingScript')||''}catch(e){}"
+" if(pendingPhoneScript){$('scriptInput').value=pendingPhoneScript;phonePhase='reconnect';$('aiBtn').textContent='3. Inject after reconnecting';$('aiResult').textContent='Generated script recovered. Connect ESP-LEGO-Setup, then tap Inject.'}"
 "}"
 "async function scanWifi(){"
 " try{"
@@ -381,6 +395,7 @@ static const char* s_html_page =
 " }"
 "}"
 "async function refreshStatus(){"
+" if(phonePhase==='mobile'||phonePhase==='reconnect')return;"
 " var r=await apiFetch('/api/status');"
 " if(!r)return;"
 " var html='';"
@@ -406,28 +421,81 @@ static const char* s_html_page =
 "async function callAI(){"
 " var prompt=$('aiPrompt').value;"
 " if(!prompt.trim()){msg('Enter a command first','warn');return}"
-" $('aiResult').textContent='Calling LLM... (WiFi switching may take 10-15s)';"
+" var phoneMode=$('llm_route').value==='phone';"
+" if(!phoneMode)phonePhase='idle';"
+" $('aiResult').textContent=phoneMode?'Preparing phone mobile-data flow...':'Calling LLM using ESP WiFi...';"
 " var btn=$('aiBtn');btn.disabled=true;btn.classList.add('btn-loading');"
-" var r=await apiFetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})});"
+" var r=phoneMode?await callAIFromPhoneFlow(prompt):await apiFetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})});"
 " btn.disabled=false;btn.classList.remove('btn-loading');"
 " if(!r){$('aiResult').textContent='Error calling LLM';return}"
+" if(r.status==='pending'){$('aiResult').textContent=r.message;btn.textContent=r.button;return}"
 " $('aiResult').textContent=r.status==='ok'?'Script injected successfully':'Error: '+(r.error||'unknown');"
+" btn.textContent='Generate & Inject';"
 " if(r.script){$('scriptInput').value=r.script}"
-" setTimeout(fetchLog,500)"
+" if(r.status==='ok')fetchLogAfterExecution()"
+"}"
+"function extractMobileScript(content){"
+" var m=content.match(/```(?:[A-Za-z0-9_+-]+)?[\\t ]*[\\r\\n]+([\\s\\S]*?)```/);"
+" return (m?m[1]:content).trim()"
+"}"
+"async function callAIFromPhoneFlow(prompt){"
+" var key=$('llm_key').value.trim();"
+" if(!key)return {status:'error',error:'Enter the API key again for phone mode'};"
+" if(pendingPhoneScript){"
+"  var injected=await apiFetch('/api/script',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:pendingPhoneScript})});"
+"  if(!injected||injected.status!=='ok')return {status:'pending',message:'ESP is not reachable yet. Reconnect ESP-LEGO-Setup, then tap again.',button:'3. Retry Inject'};"
+"  var completed=pendingPhoneScript;pendingPhoneScript='';phoneContext=null;phonePhase='idle';"
+"  try{localStorage.removeItem('espPendingScript')}catch(e){}"
+"  return {status:'ok',script:completed};"
+" }"
+" if(!phoneContext||phoneContext.user_prompt!==prompt){"
+"  var ctx=await apiFetch('/api/ai/context');"
+"  if(!ctx)return {status:'error',error:'Could not read AI context from ESP'};"
+"  phoneContext={llm_url:ctx.llm_url,llm_model:ctx.llm_model,system_prompt:ctx.system_prompt,user_prompt:prompt};"
+" }"
+" var url=(phoneContext.llm_url||'').replace(/\\/+$/,'');"
+" if(url.indexOf('https://')!==0)return {status:'error',error:'Phone mode requires an HTTPS API URL'};"
+" if(url.indexOf('/chat/completions')<0)url+='/chat/completions';"
+" var body={model:phoneContext.llm_model,messages:[{role:'system',content:phoneContext.system_prompt},{role:'user',content:prompt}],temperature:0,max_tokens:512};"
+" if((phoneContext.llm_model||'').indexOf('deepseek-v4')>=0)body.thinking={type:'disabled'};"
+" try{"
+"  var resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify(body)});"
+"  if(!resp.ok){var detail=await resp.text();return {status:'error',error:'LLM HTTP '+resp.status+': '+detail.slice(0,160)}}"
+"  var data=await resp.json();"
+"  var content=data&&data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content;"
+"  if(!content)return {status:'error',error:'LLM response contained no script'};"
+"  var script=extractMobileScript(content);"
+"  if(!script)return {status:'error',error:'LLM returned an empty script'};"
+"  pendingPhoneScript=script;phonePhase='reconnect';$('scriptInput').value=script;"
+"  try{localStorage.setItem('espPendingScript',script)}catch(e){}"
+"  return {status:'pending',message:'Script generated. Re-enable WiFi, reconnect ESP-LEGO-Setup, then tap again to inject.',button:'3. Inject after reconnecting'};"
+" }catch(e){phonePhase='mobile';return {status:'pending',message:'Phone is still using ESP WiFi for internet. Keep this page open, turn WiFi off (mobile data stays on), then tap again.',button:'2. Generate with mobile data'}}"
 "}"
 "async function injectScript(){"
 " var script=$('scriptInput').value;"
 " if(!script.trim()){msg('Enter a script first','warn');return}"
 " var r=await apiFetch('/api/script',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})});"
+" if(r&&r.status==='ok'&&script===pendingPhoneScript){pendingPhoneScript='';phoneContext=null;phonePhase='idle';try{localStorage.removeItem('espPendingScript')}catch(e){}}"
 " if(r)msg(r.status==='ok'?'Script injected':'Error: '+r.error,'warn');"
-" setTimeout(fetchLog,500)"
+" fetchLogAfterExecution()"
 "}"
 "async function fetchLog(){"
+" if(phonePhase==='mobile'||phonePhase==='reconnect')return;"
 " var r=await apiFetch('/api/exec_log');"
 " if(!r)return;"
 " var el=$('execLog');"
 " el.textContent=r.log||'(no output)';"
 " el.scrollTop=el.scrollHeight"
+"}"
+"async function fetchLogAfterExecution(){"
+" var lastResult=null;"
+" for(var i=0;i<4;i++){"
+"  await new Promise(function(resolve){setTimeout(resolve,1000)});"
+"  var r=await apiFetch('/api/exec_log');"
+"  if(r){lastResult=r;if(r.log){var el=$('execLog');el.textContent=r.log;el.scrollTop=el.scrollHeight;return}}"
+" }"
+" if(lastResult){var el=$('execLog');el.textContent='(no output)';el.scrollTop=el.scrollHeight}"
+" else {$('aiResult').textContent+='; reconnect to ESP-LEGO-Setup if output is not visible'}"
 "}"
 "function clearLog(){"
 " $('execLog').textContent=''"
@@ -483,6 +551,40 @@ static esp_err_t nvs_set_str_safe(const char* key, const char* val)
     }
     nvs_close(h);
     return err;
+}
+
+// httpd_req_recv() may return a partial body.  Read the declared body in a
+// loop so fragmented browser requests are not misreported as invalid JSON.
+static esp_err_t recv_json_body(httpd_req_t* req, char* buf, size_t buf_size)
+{
+    if (req == NULL || buf == NULL || buf_size < 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (req->content_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+        return ESP_FAIL;
+    }
+    if ((size_t)req->content_len >= buf_size) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        httpd_resp_sendstr(req, "Request body too large");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, buf + received,
+                                 req->content_len - received);
+        if (ret <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Incomplete request body");
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+
+    buf[received] = '\0';
+    return ESP_OK;
 }
 
 // ====================================================================
@@ -638,12 +740,9 @@ static esp_err_t config_wifi_post_handler(httpd_req_t* req)
     reset_inactivity_timer();
 
     char buf[1024];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+    if (recv_json_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[received] = '\0';
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
@@ -710,12 +809,9 @@ static esp_err_t config_llm_post_handler(httpd_req_t* req)
     reset_inactivity_timer();
 
     char buf[1024];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+    if (recv_json_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[received] = '\0';
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
@@ -845,6 +941,62 @@ static esp_err_t scan_get_handler(httpd_req_t* req)
     return ESP_OK;
 }
 
+// ---- GET /api/ai/context ----
+// Return the non-secret dynamic prompt and endpoint metadata so the phone
+// browser can call the LLM over mobile data. The API key deliberately stays
+// in the browser/device stores and is never returned by this endpoint.
+
+static esp_err_t ai_context_get_handler(httpd_req_t* req)
+{
+    reset_inactivity_timer();
+
+    char llm_url[256] = "";
+    char llm_model[128] = "";
+    nvs_get_str_safe("llm_url", llm_url, sizeof(llm_url));
+    nvs_get_str_safe("llm_model", llm_model, sizeof(llm_model));
+
+    if (llm_url[0] == '\0' || llm_model[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "LLM URL/model not configured");
+        return ESP_FAIL;
+    }
+
+    constexpr int prompt_size = 6144;
+    char* system_prompt = (char*)malloc(prompt_size);
+    if (system_prompt == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Out of memory");
+        return ESP_FAIL;
+    }
+    llm_client_build_system_prompt(system_prompt, prompt_size);
+
+    cJSON* root = cJSON_CreateObject();
+    if (root == NULL) {
+        free(system_prompt);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "JSON error");
+        return ESP_FAIL;
+    }
+    cJSON_AddStringToObject(root, "llm_url", llm_url);
+    cJSON_AddStringToObject(root, "llm_model", llm_model);
+    cJSON_AddStringToObject(root, "system_prompt", system_prompt);
+    free(system_prompt);
+
+    char* json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "JSON error");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
 static esp_err_t ai_post_handler(httpd_req_t* req)
 {
     reset_inactivity_timer();
@@ -856,13 +1008,10 @@ static esp_err_t ai_post_handler(httpd_req_t* req)
         return ESP_FAIL;
     }
 
-    int received = httpd_req_recv(req, buf, 1024 - 1);
-    if (received <= 0) {
+    if (recv_json_body(req, buf, 1024) != ESP_OK) {
         free(buf);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
         return ESP_FAIL;
     }
-    buf[received] = '\0';
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
@@ -1012,13 +1161,10 @@ static esp_err_t script_post_handler(httpd_req_t* req)
         return ESP_FAIL;
     }
 
-    int received = httpd_req_recv(req, buf, 4096 - 1);
-    if (received <= 0) {
+    if (recv_json_body(req, buf, 4096) != ESP_OK) {
         free(buf);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
         return ESP_FAIL;
     }
-    buf[received] = '\0';
 
     cJSON* root = cJSON_Parse(buf);
     if (root == NULL) {
@@ -1158,6 +1304,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/config/llm",  .method = HTTP_POST,   .handler = config_llm_post_handler,     .user_ctx = NULL },
     { .uri = "/api/wifi/connect", .method = HTTP_POST, .handler = wifi_connect_post_handler, .user_ctx = NULL },
     { .uri = "/api/scan",    .method = HTTP_GET,    .handler = scan_get_handler,        .user_ctx = NULL },
+    { .uri = "/api/ai/context", .method = HTTP_GET, .handler = ai_context_get_handler,  .user_ctx = NULL },
     { .uri = "/api/ai",      .method = HTTP_POST,   .handler = ai_post_handler,         .user_ctx = NULL },
     { .uri = "/api/script",  .method = HTTP_POST,   .handler = script_post_handler,     .user_ctx = NULL },
     { .uri = "/api/exec_log",.method = HTTP_GET,    .handler = exec_log_get_handler,    .user_ctx = NULL },

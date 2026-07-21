@@ -46,6 +46,16 @@ bool wifi_sta_is_connected(void);
 bool llm_client_uses_local_proxy(const char* llm_url);
 
 /**
+ * @brief Build the dynamic ESP-LEGO system prompt for a remote LLM caller.
+ *
+ * Used both by the on-device HTTP client and by the phone-mobile-data path.
+ * The prompt includes the language grammar, builtins and current peer list.
+ *
+ * @return Number of bytes that would be written, excluding the terminator.
+ */
+int llm_client_build_system_prompt(char* buf, int max_len);
+
+/**
  * @brief Call LLM API to generate a script from natural language.
  *
  * Performs the full round-trip:

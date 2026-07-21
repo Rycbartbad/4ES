@@ -44,6 +44,7 @@
 #include "espnow_comm/comm.h"
 
 #include "script_io/script_io.h"
+#include "web_console/script_inject.h"
 
 #if CONFIG_WEB_CONSOLE_ENABLED
 #include "web_console/web_console.h"
@@ -220,7 +221,11 @@ extern "C" void app_main(void)
 #endif
 
     // ---- 7. Periodic discovery broadcast (prompts sensors to announce) ----
-    t = xTaskCreate(discovery_task, "discovery", 2048, NULL, 3, NULL);
+    // Wi-Fi/ESP-NOW driver calls can use substantially more than 2 KiB,
+    // especially on warning/error paths while AP and STA are both active.
+    // The previous 2048-byte stack overflowed after connecting the STA and
+    // rebooted the whole device, taking the SoftAP and web page down with it.
+    t = xTaskCreate(discovery_task, "discovery", 4096, NULL, 3, NULL);
     if (t != pdPASS) {
         ESP_LOGW(TAG, "Failed to create discovery_task");
     }
@@ -372,6 +377,13 @@ static void exec_task(void* pv)
             } else {
                 ESP_LOGE(TAG, "Resource validation failed: %s",
                          rpt.fail_reason ? rpt.fail_reason : "unknown");
+                char log_line[256];
+                int log_len = snprintf(log_line, sizeof(log_line),
+                                       "Resource validation failed: %s\n",
+                                       rpt.fail_reason ? rpt.fail_reason : "unknown");
+                if (log_len > 0) {
+                    script_inject_write_print(log_line, log_len);
+                }
                 // Skip execution — resources exceed safe limits
             }
         }
@@ -381,17 +393,38 @@ static void exec_task(void* pv)
             ESP_LOGE(TAG, "Parse error L%d:%d %s",
                      parser.error_line, parser.error_col,
                      parser.error_msg ? parser.error_msg : "unknown");
+            char log_line[256];
+            int log_len = snprintf(log_line, sizeof(log_line),
+                                   "Parse error L%d:%d: %s\n",
+                                   parser.error_line, parser.error_col,
+                                   parser.error_msg ? parser.error_msg : "unknown");
+            if (log_len > 0) {
+                script_inject_write_print(log_line, log_len);
+            }
         } else if (s_ctx.constraint_violated) {
             ESP_LOGE(TAG, "Runtime error: %s",
                      s_ctx.violation_msg
                          ? s_ctx.violation_msg
                          : "constraint violated");
+            char log_line[256];
+            int log_len = snprintf(log_line, sizeof(log_line),
+                                   "Runtime error: %s\n",
+                                   s_ctx.violation_msg
+                                       ? s_ctx.violation_msg
+                                       : "constraint violated");
+            if (log_len > 0) {
+                script_inject_write_print(log_line, log_len);
+            }
         }
         if (s_script_timeout) {
             ESP_LOGE(TAG, "Script aborted: execution timeout");
+            static const char timeout_log[] = "Script aborted: execution timeout\n";
+            script_inject_write_print(timeout_log, sizeof(timeout_log) - 1);
         }
         if (s_script_abort_requested) {
             ESP_LOGW(TAG, "Script aborted by user request");
+            static const char abort_log[] = "Script aborted by new script request\n";
+            script_inject_write_print(abort_log, sizeof(abort_log) - 1);
         }
 
         // ---- 8. Hardware safety — reset tracked output pins ----

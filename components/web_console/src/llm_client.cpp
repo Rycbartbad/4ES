@@ -91,22 +91,28 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
 
-        // ---- Set public DNS servers as fallback ----
-        // lwIP's global DNS table may be empty if AP was default netif when
-        // STA DHCP completed. Set 8.8.8.8 and 8.8.4.4 to guarantee DNS works.
-        ip_addr_t dns_primary, dns_secondary;
-        IP_ADDR4(&dns_primary, 8, 8, 8, 8);
-        IP_ADDR4(&dns_secondary, 8, 8, 4, 4);
-        dns_setserver(0, &dns_primary);
-        dns_setserver(1, &dns_secondary);
-
-        // Also set STA as default netif
+        // Route outbound DNS and HTTP through the STA interface.
         esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
         if (sta_netif) {
             esp_netif_set_default_netif(sta_netif);
         }
 
-        ESP_LOGI(TAG, "DNS fixed: 8.8.8.8 / 8.8.4.4, default netif=STA");
+        // Preserve DNS supplied by the network's DHCP server. Campus and
+        // corporate networks often block direct access to public resolvers,
+        // so unconditionally replacing it with 8.8.8.8 breaks an otherwise
+        // valid Wi-Fi connection. Use a public resolver only if DHCP supplied
+        // no usable primary DNS at all.
+        const ip_addr_t* primary_dns = dns_getserver(0);
+        if (primary_dns == NULL || ip_addr_isany(primary_dns)) {
+            ip_addr_t fallback_dns;
+            IP_ADDR4(&fallback_dns, 8, 8, 8, 8);
+            dns_setserver(0, &fallback_dns);
+            ESP_LOGW(TAG, "DHCP supplied no DNS; using fallback 8.8.8.8");
+        } else {
+            ESP_LOGI(TAG, "Using DHCP DNS: " IPSTR,
+                     IP2STR(&primary_dns->u_addr.ip4));
+        }
+        ESP_LOGI(TAG, "Default netif set to STA");
     }
 }
 
@@ -155,47 +161,78 @@ static bool restore_espnow_channel(void)
     const uint8_t channel = 1;
 #endif
 
-    // 1. Disconnect STA
+    // 1. Disconnect STA. Keep the AP interface alive while restoring the
+    // ESP-NOW channel: stopping Wi-Fi tears down the SoftAP entirely and
+    // makes phones abandon ESP-LEGO-Setup for another saved network.
     esp_err_t ret = esp_wifi_disconnect();
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT) {
-        ESP_LOGW(TAG, "STA disconnect before WiFi restart failed: %d", ret);
+        ESP_LOGW(TAG, "STA disconnect before channel restore failed: %d", ret);
     }
     s_sta_connected = false;
 
-    // 2. Deinit ESP-NOW (must be done before stopping WiFi)
+    // Let the STA disconnect event settle before changing the radio channel.
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // 2. Fast path: switch back without stopping Wi-Fi or reinitialising
+    // ESP-NOW. Peers follow the current radio channel, so this retains the
+    // SoftAP while the browser remains connected.
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    // If STA and SoftAP were already on the configured ESP-NOW channel,
+    // setting that same channel is unnecessary. The driver rejects even a
+    // no-op set_channel() while a phone is associated with the SoftAP, which
+    // previously sent us into the destructive Wi-Fi restart fallback.
+    uint8_t current_channel = 0;
+    wifi_second_chan_t second_channel = WIFI_SECOND_CHAN_NONE;
+    ret = esp_wifi_get_channel(&current_channel, &second_channel);
+    if (ret == ESP_OK && current_channel == channel) {
+        peer_mgr_espnow_readd_all();
+        ESP_LOGI(TAG, "WiFi kept running; already on ESP-NOW channel %u", channel);
+        return true;
+    }
+
+    ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (ret == ESP_OK) {
+        peer_mgr_espnow_readd_all();
+        ESP_LOGI(TAG, "WiFi kept running; restored ESP-NOW channel %u", channel);
+        return true;
+    }
+
+    // 3. Some driver states reject a channel change immediately after STA
+    // disconnect. Retain the old full restart only as a recovery fallback.
+    ESP_LOGW(TAG, "Fast channel restore to %u failed: %d; retrying with WiFi restart",
+             channel, ret);
     esp_now_deinit();
 
-    // 3. Stop WiFi completely — forces a clean restart below
     ret = esp_wifi_stop();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "esp_wifi_stop failed: %d", ret);
     }
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // 4. Restart WiFi
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %d", ret);
         return false;
     }
 
-    // 5. Set APSTA mode and channel — fresh start, no state-machine conflicts
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_ps(WIFI_PS_NONE);
     ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "set channel %u after wifi restart failed: %d", channel, ret);
+        ESP_LOGE(TAG, "set channel %u after WiFi restart failed: %d", channel, ret);
         return false;
     }
 
-    // 6. Re-init ESP-NOW (callbacks + broadcast peer)
+    // 4. Re-init ESP-NOW (callbacks + broadcast peer) after the fallback.
     ret = espnow_comm_reinit_espnow();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "espnow_comm_reinit_espnow failed: %d", ret);
         return false;
     }
 
-    // 7. Re-add all active peers to the ESP-NOW table
+    // 5. Re-add all active peers to the ESP-NOW table.
     peer_mgr_espnow_readd_all();
 
     ESP_LOGI(TAG, "WiFi restarted on channel %u, ESP-NOW re-initialised", channel);
@@ -374,6 +411,7 @@ typedef struct {
     char* buf;
     int   max_len;
     int   written;
+    bool  truncated;
 } http_body_ctx_t;
 
 // Event handler — captures body chunks during esp_http_client_perform().
@@ -387,6 +425,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t* evt)
         int copy = evt->data_len;
         if (ctx->written + copy > ctx->max_len - 1) {
             copy = ctx->max_len - 1 - ctx->written;
+            ctx->truncated = true;
         }
         if (copy > 0 && evt->data) {
             memcpy(ctx->buf + ctx->written, evt->data, (size_t)copy);
@@ -408,7 +447,8 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
     http_body_ctx_t body_ctx = {
         .buf     = response_buf,
         .max_len = response_max,
-        .written = 0
+        .written = 0,
+        .truncated = false
     };
 
     esp_http_client_config_t config = {};
@@ -453,6 +493,11 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
 
     esp_http_client_cleanup(client);
 
+    if (body_ctx.truncated) {
+        ESP_LOGE(TAG, "LLM response exceeded %d-byte buffer", response_max - 1);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     if (status_code != 200) {
         return ESP_FAIL;
     }
@@ -464,7 +509,7 @@ static esp_err_t http_post_json(const char* url, const char* auth_header,
 // Build system prompt — design.md §16.6
 // ====================================================================
 
-static int build_system_prompt(char* buf, int max_len)
+int llm_client_build_system_prompt(char* buf, int max_len)
 {
     int pos = 0;
 
@@ -506,6 +551,7 @@ static int build_system_prompt(char* buf, int max_len)
         "- analog_write(pin,val)-> void PWM output, val: 0(off) to 1023(max)\n"
         "- sleep(ms) -> void            pause script for N milliseconds\n"
         "- print(val) -> void           print value to web console execution log\n"
+        "- The + operator concatenates strings with numbers/booleans, e.g. print(\"Temperature: \" + 25);\n"
         "- list_peers() -> string       list all online devices as formatted text\n"
         "- peer_count() -> number       number of currently online peer devices\n"
         "- peer_online(id) -> bool      check if peer id/name is online\n"
@@ -728,7 +774,7 @@ int llm_client_call(const char* ssid, const char* pass,
         /* network teardown moved to llm_client_finish_network() called by caller */
         return -1;
     }
-    build_system_prompt(sys_prompt, sys_prompt_len);
+    llm_client_build_system_prompt(sys_prompt, sys_prompt_len);
 
     // ---- 3. Build HTTP JSON body ----
     cJSON* root = cJSON_CreateObject();

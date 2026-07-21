@@ -71,6 +71,16 @@ static void test_string(void) {
     TEST_ASSERT(strstr(s_output, "hello")); TEST_PASS();
 }
 
+static void test_mixed_string_concat(void) {
+    TEST("Interp: concatenate strings with numbers and booleans");
+    TEST_ASSERT(run(
+        "print(\"Temperature: \"+25);"
+        "print(true+\" is ready\");"));
+    TEST_ASSERT(strstr(s_output, "Temperature: 25"));
+    TEST_ASSERT(strstr(s_output, "true is ready"));
+    TEST_PASS();
+}
+
 static void test_if_true(void) {
     TEST("Interp: if(1) print(10)");
     TEST_ASSERT(run("if(1){print(10);}else{print(20);}"));
@@ -140,7 +150,8 @@ static void test_script_isolate(void) {
 void test_interpreter(void) {
     static bool once = false; if (!once) { init(); once = true; }
     printf("\n[Interpreter Tests]\n");
-    test_arith(); test_var(); test_string(); test_if_true(); test_if_false();
+    test_arith(); test_var(); test_string(); test_mixed_string_concat();
+    test_if_true(); test_if_false();
     test_while(); test_func(); test_func_nest(); test_assign();
     test_compare(); test_logic(); test_multi_stmt(); test_redecl_builtin();
     test_script_isolate();

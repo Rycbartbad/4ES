@@ -90,6 +90,29 @@ static inline Value val_str(const char* s)
     return v;
 }
 
+// Format scalar values for string concatenation. Keep number formatting
+// consistent with print(), so sensor values do not unexpectedly gain a
+// trailing ".000000" when embedded in a label.
+static int format_scalar_text(Value value, char* out, size_t out_size)
+{
+    switch (value.type) {
+    case VAL_STR:
+        return snprintf(out, out_size, "%s", value.str ? value.str : "");
+    case VAL_NUM: {
+        double intpart;
+        if (modf(value.num, &intpart) == 0.0 &&
+            value.num < 1e10 && value.num > -1e10) {
+            return snprintf(out, out_size, "%.0f", value.num);
+        }
+        return snprintf(out, out_size, "%g", value.num);
+    }
+    case VAL_BOOL:
+        return snprintf(out, out_size, "%s", value.b ? "true" : "false");
+    default:
+        return -1;
+    }
+}
+
 // ====================================================================
 // Static object pools --- design.md section 6.6
 // ====================================================================
@@ -291,11 +314,28 @@ static Value eval_expr(ASTNode* node, Environment* env, ExecutionContext* ctx)
 
         switch (node->op) {
 
-        // String concatenation (TOKEN_PLUS on two strings)
+        // String concatenation. If either side is a string, scalar numbers
+        // and booleans are converted to text. This supports natural scripts
+        // such as print("Temperature: " + read_sensor(1)).
         case TOKEN_PLUS: {
-            if (left.type == VAL_STR && right.type == VAL_STR) {
+            if (left.type == VAL_STR || right.type == VAL_STR) {
+                char left_text[INTERN_ENTRY_LEN];
+                char right_text[INTERN_ENTRY_LEN];
+                int left_len = format_scalar_text(left, left_text,
+                                                   sizeof(left_text));
+                int right_len = format_scalar_text(right, right_text,
+                                                    sizeof(right_text));
+                if (left_len < 0 || right_len < 0) {
+#if CONFIG_STRICT_MODE
+                    ctx->constraint_violated = true;
+                    ctx->violation_msg       = "Type error: cannot concatenate this value";
+#endif
+                    return val_undefined();
+                }
+
                 char buf[INTERN_ENTRY_LEN];
-                int n = snprintf(buf, sizeof(buf), "%s%s", left.str, right.str);
+                int n = snprintf(buf, sizeof(buf), "%s%s",
+                                 left_text, right_text);
                 if (n < 0 || n >= (int)sizeof(buf)) {
 #if CONFIG_STRICT_MODE
                     ctx->constraint_violated = true;
