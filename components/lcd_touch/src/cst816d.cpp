@@ -8,21 +8,17 @@
  * Protocol:
  *   7-bit I2C address: 0x15
  *   Supports fast mode (400 kHz).
- *   Touch data is read in a bulk transfer starting at register 0x00.
+ *   Touch data is read in a bulk transfer starting at register 0x01.
  *
  * Register map (relevant subset):
  *   Addr  | Name            | R/W | Description
  *   ------+-----------------+-----+------------------------------
- *   0x00  | Status          | R   | Bit[3]: touch detected
- *         |                 |     | Bit[0]: touch active
  *   0x01  | Gesture ID      | R   | Gesture type (see below)
  *   0x02  | Touch points    | R   | Number of current touch points
- *   0x03  | X High          | R   | X[11:4]
- *   0x04  | X Low           | R   | X[3:0] (upper nibble) +
- *         |                 |     | touch 2 Y[7:4] (lower nibble)
- *   0x05  | Y High          | R   | Y[11:4]
- *   0x06  | Y Low           | R   | Y[3:0] (upper nibble) +
- *         |                 |     | touch 2 Y[3:0] / other flags
+ *   0x03  | X High          | R   | X[11:8] in low nibble
+ *   0x04  | X Low           | R   | X[7:0]
+ *   0x05  | Y High          | R   | Y[11:8] in low nibble
+ *   0x06  | Y Low           | R   | Y[7:0]
  *
  * Gesture IDs:
  *   0x00 = none       0x01 = swipe up     0x02 = swipe down
@@ -42,6 +38,7 @@
 #include <cstring>
 
 #include "lcd_touch/lcd_touch.h"
+#include "lcd_touch/touch_logic.h"
 
 /* ====================================================================
  * Local constants
@@ -53,19 +50,36 @@ static const char* TAG = "cst816d";
 #define TOUCH_I2C_TIMEOUT_MS  50
 
 /* CST816D registers */
-#define CST816D_REG_STATUS      0x00
 #define CST816D_REG_GESTURE     0x01
-#define CST816D_REG_TOUCH_NUM   0x02
-#define CST816D_REG_X_HIGH      0x03
-#define CST816D_REG_X_LOW       0x04
-#define CST816D_REG_Y_HIGH      0x05
-#define CST816D_REG_Y_LOW       0x06
-#define CST816D_REG_SLEEP       0xFE
-#define CST816D_REG_VERSION     0xEF
 
-/* Status flags */
-#define CST816D_STATUS_TOUCH    (1 << 3)
-#define CST816D_STATUS_ACTIVE   (1 << 0)
+#ifndef CONFIG_LCD_TOUCH_RAW_MAX_X
+#define CONFIG_LCD_TOUCH_RAW_MAX_X 239
+#endif
+#ifndef CONFIG_LCD_TOUCH_RAW_MAX_Y
+#define CONFIG_LCD_TOUCH_RAW_MAX_Y 239
+#endif
+
+static const touch_transform_config_t TOUCH_TRANSFORM = {
+    .raw_max_x = CONFIG_LCD_TOUCH_RAW_MAX_X,
+    .raw_max_y = CONFIG_LCD_TOUCH_RAW_MAX_Y,
+    .panel_max_x = LCD_WIDTH - 1,
+    .panel_max_y = LCD_HEIGHT - 1,
+#ifdef CONFIG_LCD_TOUCH_SWAP_XY
+    .swap_xy = true,
+#else
+    .swap_xy = false,
+#endif
+#ifdef CONFIG_LCD_TOUCH_INVERT_X
+    .invert_x = true,
+#else
+    .invert_x = false,
+#endif
+#ifdef CONFIG_LCD_TOUCH_INVERT_Y
+    .invert_y = true,
+#else
+    .invert_y = false,
+#endif
+};
 
 /* ====================================================================
  * Local state
@@ -97,38 +111,6 @@ static esp_err_t touch_read_regs(uint8_t reg, uint8_t* data, uint32_t len)
                         data, len,       /* read: register data */
                         pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
     return ret;
-}
-
-/**
- * Write a single byte to a touch controller register.
- *
- * @param reg   Register address.
- * @param val   Value to write.
- * @return esp_err_t.
- */
-static esp_err_t touch_write_reg(uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    return i2c_master_transmit(s_i2c_dev, buf, sizeof(buf),
-                               pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
-}
-
-static void touch_scan_i2c_bus(void)
-{
-    int found = 0;
-
-    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-        esp_err_t ret = i2c_master_probe(s_i2c_bus, addr,
-                                         pdMS_TO_TICKS(20));
-        if (ret == ESP_OK) {
-            ESP_LOGW(TAG, "I2C device found at 0x%02X", addr);
-            found++;
-        }
-    }
-
-    if (found == 0) {
-        ESP_LOGW(TAG, "I2C scan found no devices on touch bus");
-    }
 }
 
 /* ====================================================================
@@ -186,9 +168,8 @@ esp_err_t touch_init(void)
     ret = i2c_master_probe(s_i2c_bus, TOUCH_I2C_ADDR,
                            pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "CST816D probe failed at 0x%02X: %s",
+        ESP_LOGE(TAG, "CST816D not found at 0x%02X: %s",
                  TOUCH_I2C_ADDR, esp_err_to_name(ret));
-        touch_scan_i2c_bus();
         i2c_del_master_bus(s_i2c_bus);
         s_i2c_bus = NULL;
         return ret;
@@ -207,24 +188,7 @@ esp_err_t touch_init(void)
         return ret;
     }
 
-    /* ---- 4. Wake the touch controller ---- */
-    /* Some CST816D modules start in sleep mode.  Writing 0x00 to register
-     * 0xFE (sleep control) and to 0xEF (chip ID / status) can wake them. */
-    ret = touch_write_reg(CST816D_REG_SLEEP, 0x00);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Wake command failed (may be normal): %s",
-                 esp_err_to_name(ret));
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    ret = touch_write_reg(CST816D_REG_VERSION, 0x00);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Version reg write failed (may be normal): %s",
-                 esp_err_to_name(ret));
-    }
-
-    /* ---- 5. Configure INT pin as input with pull-up ---- */
+    /* ---- 4. Configure INT pin as input with pull-up ---- */
     gpio_set_direction(PIN_TOUCH_INT, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PIN_TOUCH_INT, GPIO_PULLUP_ONLY);
 
@@ -248,59 +212,37 @@ esp_err_t touch_read(touch_data_t* out)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Bulk read 7 bytes starting at register 0x00 */
-    uint8_t buf[7];
-    esp_err_t ret = touch_read_regs(CST816D_REG_STATUS, buf, sizeof(buf));
+    /* GestureID, FingerNum, X and Y are contiguous at 0x01..0x06. */
+    uint8_t buf[6];
+    esp_err_t ret = touch_read_regs(CST816D_REG_GESTURE, buf, sizeof(buf));
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "I2C read failed: %s", esp_err_to_name(ret));
+        ESP_LOGD(TAG, "I2C read failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    /* ---- Parse status ---- */
-    uint8_t status   = buf[0];
-    uint8_t gesture  = buf[1];
-    uint8_t touch_n  = buf[2];
+    touch_decoded_sample_t sample = {};
+    if (!touch_decode_registers(buf, sizeof(buf), &TOUCH_TRANSFORM, &sample)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
 
     /* Gesture update */
-    if (gesture != 0) {
-        s_last_gesture = (touch_gesture_t)gesture;
+    if (sample.gesture != 0) {
+        s_last_gesture = (touch_gesture_t)sample.gesture;
         out->gesture   = s_last_gesture;
     } else {
         out->gesture = TOUCH_GESTURE_NONE;
     }
 
     /* Touch detected? */
-    bool touched = (status & CST816D_STATUS_TOUCH) ||
-                   (status & CST816D_STATUS_ACTIVE);
-
-    if (!touched || touch_n == 0) {
+    if (!sample.pressed) {
         out->points = 0;
         return ESP_OK;
     }
 
-    /* ---- Parse touch points ---- */
-
-    /* Point 1: 12-bit X and Y */
-    uint16_t x_raw = ((uint16_t)(buf[3] & 0x0F) << 8) | buf[4];
-    uint16_t y_raw = ((uint16_t)(buf[5] & 0x0F) << 8) | buf[6];
-
-    /* Scale from 12-bit range (0-4095) to display resolution (240) */
-    out->p[0].x = (uint16_t)((uint32_t)x_raw * LCD_WIDTH / 4096);
-    out->p[0].y = (uint16_t)((uint32_t)y_raw * LCD_HEIGHT / 4096);
+    out->p[0].x = sample.x;
+    out->p[0].y = sample.y;
     out->p[0].active = true;
-
-    /* Clamp to valid range */
-    if (out->p[0].x >= LCD_WIDTH)  out->p[0].x = LCD_WIDTH - 1;
-    if (out->p[0].y >= LCD_HEIGHT) out->p[0].y = LCD_HEIGHT - 1;
-
-    out->points = (touch_n > 0) ? 1 : 0;
-
-    /* Note: CST816D supports up to 2 touch points, but reading the second
-     * point requires extended registers.  For V1.0 we support single touch.
-     * If touch_n >= 2, we report 1 point and log a debug message. */
-    if (touch_n >= 2) {
-        ESP_LOGD(TAG, "Second touch point detected but not read (single-touch V1)");
-    }
+    out->points = 1;
 
     return ESP_OK;
 }

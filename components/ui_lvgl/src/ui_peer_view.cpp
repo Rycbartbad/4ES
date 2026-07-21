@@ -18,20 +18,13 @@ static void copy_text(char* dst, size_t dst_len, const char* src)
     dst[dst_len - 1] = '\0';
 }
 
-static void format_values(const PeerEntry* peer, char* out, size_t out_len)
+static void format_values(const double* values, int value_count,
+                          char* out, size_t out_len)
 {
     if (out == NULL || out_len == 0) {
         return;
     }
 
-    if (peer == NULL) {
-        copy_text(out, out_len, "--");
-        return;
-    }
-
-    double values[UI_SENSOR_VALUE_MAX];
-    int value_count = ui_lvgl_copy_sensor_values(peer->module_id, values,
-                                                 UI_SENSOR_VALUE_MAX);
     if (value_count <= 0) {
         copy_text(out, out_len, "--");
         return;
@@ -78,15 +71,23 @@ void ui_peer_view_refresh(UiStatusState* state)
         UiSensorCard* card = &state->sensors[i];
         card->present = true;
         card->connected = (peer != NULL && peer->state == PEER_ACTIVE);
+        card->module_id = peer ? peer->module_id : 0;
         copy_text(card->name, sizeof(card->name),
                   (peer && peer->name[0]) ? peer->name : "sensor");
-        format_values(peer, card->data, sizeof(card->data));
+        copy_text(card->capability, sizeof(card->capability),
+                  peer ? peer->capability : "");
+        card->value_count = ui_lvgl_copy_sensor_snapshot(
+            card->module_id, card->values, UI_SENSOR_VALUE_MAX,
+            &card->last_update_ms);
+        format_values(card->values, card->value_count,
+                      card->data, sizeof(card->data));
     }
 
     for (int i = shown; i < UI_SENSOR_CARD_MAX; i++) {
         UiSensorCard* card = &state->sensors[i];
         card->present = false;
         card->connected = false;
+        card->module_id = 0;
         static const char* empty_names[UI_SENSOR_CARD_MAX] = {
             "sensor 1", "sensor 2", "sensor 3", "sensor 4",
         };

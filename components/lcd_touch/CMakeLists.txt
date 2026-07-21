@@ -1,4 +1,4 @@
-idf_component_register(SRCS "src/st7789.cpp" "src/cst816d.cpp"
+idf_component_register(SRCS "src/st7789.cpp" "src/cst816d.cpp" "src/touch_logic.cpp"
                        INCLUDE_DIRS "include"
                        REQUIRES driver spi_flash)
 

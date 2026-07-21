@@ -64,10 +64,10 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #define USE_SENSOR_VIBRATION 0   // Vibration sensor
 #define USE_SENSOR_RAINDROP  0   // Raindrop sensor
 #define USE_SENSOR_BH1750    0   // BH1750 light sensor
-#define USE_SENSOR_JW01      1   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
+#define USE_SENSOR_JW01      0   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
 
-#define USE_BUZZER           0   // Passive buzzer (PWM melody playback)
-#define USE_SERVO            1   // Hobby servo (50 Hz PWM position control)
+#define USE_BUZZER           1   // Passive buzzer (PWM melody playback)
+#define USE_SERVO            0   // Hobby servo (50 Hz PWM position control)
 
 // ====================================================================
 // Buzzer Configuration (passive buzzer via LEDC PWM)
@@ -186,7 +186,6 @@ static const uint16_t s_note_freqs[] = {
 // Displayed in web console + injected into LLM prompts.
 // ====================================================================
 
-#if USE_SENSOR_JW01
 static const char* SENSOR_CAPABILITY =
 #if USE_SERVO
     "Servo module: GPIO4 50Hz PWM servo. "
@@ -195,31 +194,26 @@ static const char* SENSOR_CAPABILITY =
 #if USE_BUZZER
     "Doorbell: GPIO4 passive buzzer. "
     "Use buzzer_beep(id,count), buzzer_note(id,note,dur). "
-    "remote_read returns [co2,tvoc,ch2o]. "
 #endif
+#if USE_SENSOR_JW01
     "JW01 air sensor: remote_read returns [co2,tvoc,ch2o]."
-    ;
 #elif USE_SENSOR_BH1750
-static const char* SENSOR_CAPABILITY =
     "BH1750 Light Sensor: ambient light(0-65535 lux). "
-    "Returns 1 value: [lux].";
+    "Returns 1 value: [lux]."
 #elif USE_SENSOR_DHT11
-static const char* SENSOR_CAPABILITY =
     "DHT11 Temperature and Humidity Sensor: temp(0-50C), humidity(20-90%). "
-    "Returns 2 values: [temperature_C, humidity_percent].";
+    "Returns 2 values: [temperature_C, humidity_percent]."
 #elif USE_SENSOR_VIBRATION
-static const char* SENSOR_CAPABILITY =
     "Vibration Sensor: detects vibration (binary). "
-    "Returns 1 value: [vibration_detected] (0 or 1).";
+    "Returns 1 value: [vibration_detected] (0 or 1)."
 #elif USE_SENSOR_RAINDROP
-static const char* SENSOR_CAPABILITY =
     "Raindrop Sensor: detects rain/moisture (binary). "
-    "Returns 1 value: [rain_detected] (0 or 1).";
-#else
-static const char* SENSOR_CAPABILITY =
+    "Returns 1 value: [rain_detected] (0 or 1)."
+#elif !USE_BUZZER && !USE_SERVO
     "Generic ADC Sensor: reads analog voltages on pins 4,5,6. "
-    "Returns 3 values: [adc_pin4, adc_pin5, adc_pin6] (0-4095).";
+    "Returns 3 values: [adc_pin4, adc_pin5, adc_pin6] (0-4095)."
 #endif
+    ;
 
 // ====================================================================
 // Buzzer driver (passive buzzer via LEDC PWM)
@@ -640,7 +634,7 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
     }
     protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 2);
 
-#else
+#elif !USE_BUZZER && !USE_SERVO
     // Generic ADC sensor — reads pins 4, 5, 6
     #define SENSOR_ADC_PINS   {4, 5, 6}
     #define SENSOR_ADC_COUNT  3
@@ -651,6 +645,10 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
     }
     protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq,
                               values, SENSOR_ADC_COUNT);
+#else
+    // Actuator-only modules have no sampled values. The Master identifies
+    // them from capability and should not poll DATA_REQ periodically.
+    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, nullptr, 0);
 #endif
 
     if (resp_len > 0) {

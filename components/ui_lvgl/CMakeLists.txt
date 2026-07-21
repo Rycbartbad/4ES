@@ -3,6 +3,7 @@ idf_component_register(
         "src/ui_lvgl.cpp"
         "src/ui_screen_diag.cpp"
         "src/ui_peer_view.cpp"
+        "src/ui_sensor_model.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
     REQUIRES lvgl lcd_touch esp_timer espnow_comm freertos

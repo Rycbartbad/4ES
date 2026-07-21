@@ -3,7 +3,7 @@
 以下命令在 Windows PowerShell 中执行，位置为本项目根目录：
 
 ```powershell
-cd D:\robomaster\good_code\2027\4ES
+cd C:\Users\jjy\Desktop\4ES\4ES
 ```
 
 当前主机板使用 ESP32-S3 原生 USB Serial/JTAG，烧录不需要额外 UART 转接板。
@@ -77,14 +77,14 @@ Write-Host "Using $ESPPORT"
 
 `Ctrl+]` 退出 monitor。
 
-## 从机分支
+## 从机固件
 
-从机代码和脚本提交在 `doorbell-sensor` 分支。需要烧录从机时先切分支：
+当前分支已包含 ESP32-C3 从机代码和构建脚本，不需要切换到旧的 `doorbell-sensor` 分支。基本命令：
 
 ```powershell
-git switch doorbell-sensor
-.\doorbell_sensor.ps1 build -BuildDir build\sensor_usb
-.\doorbell_sensor.ps1 flash -BuildDir build\sensor_usb -Port COM8
+.\scripts\build_sensor.ps1 -Flash -Port COM5
+.\scripts\build_sensor.ps1 -Monitor -Port COM5
 ```
 
+不同从机不是只换设备名；编译前还要选择对应硬件宏。Doorbell 的完整配置、烧录和验证步骤见 [docs/slave_firmware_guide.md](docs/slave_firmware_guide.md)。板载触摸界面的详细预期效果见 [docs/lvgl_requirements.md](docs/lvgl_requirements.md)。
 

@@ -1,0 +1,25 @@
+menu "LCD and capacitive touch"
+
+config LCD_TOUCH_SWAP_XY
+    bool "Swap touch X and Y axes"
+    default n
+
+config LCD_TOUCH_INVERT_X
+    bool "Invert touch X axis"
+    default n
+
+config LCD_TOUCH_INVERT_Y
+    bool "Invert touch Y axis"
+    default n
+
+config LCD_TOUCH_RAW_MAX_X
+    int "Maximum raw touch X coordinate"
+    range 1 4095
+    default 239
+
+config LCD_TOUCH_RAW_MAX_Y
+    int "Maximum raw touch Y coordinate"
+    range 1 4095
+    default 239
+
+endmenu

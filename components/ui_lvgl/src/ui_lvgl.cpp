@@ -21,10 +21,13 @@ static constexpr uint32_t UI_TASK_DELAY_MS = 5;
 static constexpr uint32_t UI_REFRESH_MS = 250;
 static constexpr uint32_t UI_PEER_REFRESH_MS = 500;
 static constexpr uint32_t UI_SENSOR_POLL_MS = 2000;
+static constexpr uint32_t UI_SELECTED_SENSOR_POLL_MS = 1000;
 
 static lv_disp_draw_buf_t s_draw_buf;
 static lv_color_t s_draw_buf_1[LCD_WIDTH * UI_DRAW_BUF_ROWS];
 static lv_disp_drv_t s_disp_drv;
+static lv_indev_drv_t s_indev_drv;
+static lv_indev_t* s_touch_indev = NULL;
 static esp_timer_handle_t s_tick_timer = NULL;
 static TaskHandle_t s_ui_task_handle = NULL;
 static TaskHandle_t s_poll_task_handle = NULL;
@@ -34,10 +37,13 @@ static bool s_started = false;
 static UiStatusState s_status = {};
 
 typedef struct {
-    bool valid;
+    bool in_use;
     uint8_t module_id;
     double values[UI_SENSOR_VALUE_MAX];
     int value_count;
+    uint32_t last_update_ms;
+    uint32_t last_poll_ms;
+    ui_sensor_history_t history;
 } UiSensorValues;
 
 static UiSensorValues s_sensor_values[UI_SENSOR_CARD_MAX];
@@ -107,11 +113,34 @@ static void lv_tick_cb(void* arg)
     lv_tick_inc(1);
 }
 
+static void touch_read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data)
+{
+    (void)drv;
+    static lv_point_t last_point = {0, 0};
+
+    data->point = last_point;
+    data->state = LV_INDEV_STATE_RELEASED;
+    if (!touch_is_initialized()) {
+        return;
+    }
+
+    touch_data_t touch = {};
+    if (touch_read(&touch) != ESP_OK || touch.points == 0 ||
+        !touch.p[0].active) {
+        return;
+    }
+
+    last_point.x = (lv_coord_t)touch.p[0].x;
+    last_point.y = (lv_coord_t)touch.p[0].y;
+    data->point = last_point;
+    data->state = LV_INDEV_STATE_PRESSED;
+}
+
 static void store_sensor_values(uint8_t module_id, const double* values,
                                 int value_count)
 {
-    if (value_count < 0) {
-        value_count = 0;
+    if (values == NULL || value_count <= 0) {
+        return;
     }
     if (value_count > UI_SENSOR_VALUE_MAX) {
         value_count = UI_SENSOR_VALUE_MAX;
@@ -120,29 +149,41 @@ static void store_sensor_values(uint8_t module_id, const double* values,
     taskENTER_CRITICAL(&s_sensor_values_lock);
     int slot = -1;
     for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
-        if (s_sensor_values[i].valid &&
+        if (s_sensor_values[i].in_use &&
             s_sensor_values[i].module_id == module_id) {
             slot = i;
             break;
         }
-        if (slot < 0 && !s_sensor_values[i].valid) {
+        if (slot < 0 && !s_sensor_values[i].in_use) {
             slot = i;
         }
     }
 
     if (slot >= 0) {
-        s_sensor_values[slot].valid = true;
+        s_sensor_values[slot].in_use = true;
         s_sensor_values[slot].module_id = module_id;
         s_sensor_values[slot].value_count = value_count;
+        s_sensor_values[slot].last_update_ms =
+            (uint32_t)(esp_timer_get_time() / 1000);
         for (int i = 0; i < value_count; i++) {
             s_sensor_values[slot].values[i] = values[i];
         }
+        ui_sensor_history_record(&s_sensor_values[slot].history,
+                                 s_sensor_values[slot].last_update_ms,
+                                 values, value_count);
     }
     taskEXIT_CRITICAL(&s_sensor_values_lock);
 }
 
 int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
                                int max_values)
+{
+    return ui_lvgl_copy_sensor_snapshot(module_id, out_values, max_values,
+                                        NULL);
+}
+
+int ui_lvgl_copy_sensor_snapshot(uint8_t module_id, double* out_values,
+                                 int max_values, uint32_t* last_update_ms)
 {
     if (out_values == NULL || max_values <= 0) {
         return 0;
@@ -151,7 +192,7 @@ int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
     int copied = 0;
     taskENTER_CRITICAL(&s_sensor_values_lock);
     for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
-        if (!s_sensor_values[i].valid ||
+        if (!s_sensor_values[i].in_use ||
             s_sensor_values[i].module_id != module_id) {
             continue;
         }
@@ -163,10 +204,64 @@ int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
         for (int j = 0; j < copied; j++) {
             out_values[j] = s_sensor_values[i].values[j];
         }
+        if (last_update_ms != NULL) {
+            *last_update_ms = s_sensor_values[i].last_update_ms;
+        }
         break;
     }
     taskEXIT_CRITICAL(&s_sensor_values_lock);
     return copied;
+}
+
+int ui_lvgl_copy_sensor_history(uint8_t module_id, int value_index,
+                                uint32_t now_ms, uint32_t window_ms,
+                                float* out, int max_values)
+{
+    int copied = 0;
+    taskENTER_CRITICAL(&s_sensor_values_lock);
+    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+        if (s_sensor_values[i].in_use &&
+            s_sensor_values[i].module_id == module_id) {
+            copied = ui_sensor_history_copy_metric(
+                &s_sensor_values[i].history, value_index, now_ms, window_ms,
+                out, max_values);
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&s_sensor_values_lock);
+    return copied;
+}
+
+static bool claim_sensor_poll(uint8_t module_id, uint32_t now_ms,
+                              uint32_t interval_ms)
+{
+    bool due = false;
+    taskENTER_CRITICAL(&s_sensor_values_lock);
+    int slot = -1;
+    for (int i = 0; i < UI_SENSOR_CARD_MAX; i++) {
+        if (s_sensor_values[i].in_use &&
+            s_sensor_values[i].module_id == module_id) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && !s_sensor_values[i].in_use) {
+            slot = i;
+        }
+    }
+    if (slot >= 0) {
+        UiSensorValues* sensor = &s_sensor_values[slot];
+        if (!sensor->in_use) {
+            sensor->in_use = true;
+            sensor->module_id = module_id;
+            sensor->last_poll_ms = now_ms - interval_ms;
+        }
+        if ((uint32_t)(now_ms - sensor->last_poll_ms) >= interval_ms) {
+            sensor->last_poll_ms = now_ms;
+            due = true;
+        }
+    }
+    taskEXIT_CRITICAL(&s_sensor_values_lock);
+    return due;
 }
 
 static void ui_task(void* arg)
@@ -198,19 +293,29 @@ static void sensor_poll_task(void* arg)
     (void)arg;
 
     while (1) {
-        TickType_t poll_start = xTaskGetTickCount();
-
         int count = 0;
         PeerEntry** peers = peer_mgr_list(&count);
         if (count > UI_SENSOR_CARD_MAX) {
             count = UI_SENSOR_CARD_MAX;
         }
 
+        const uint8_t selected_module = ui_screen_diag_selected_module();
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        bool requested = false;
         for (int i = 0; i < count; i++) {
             if (peers == NULL || peers[i] == NULL) {
                 continue;
             }
+            if (!ui_sensor_capability_has_measurements(peers[i]->capability)) {
+                continue;
+            }
             const uint8_t module_id = peers[i]->module_id;
+            const uint32_t interval_ms =
+                (module_id == selected_module) ? UI_SELECTED_SENSOR_POLL_MS
+                                               : UI_SENSOR_POLL_MS;
+            if (!claim_sensor_poll(module_id, now_ms, interval_ms)) {
+                continue;
+            }
             double values[UI_SENSOR_VALUE_MAX];
             int value_count = espnow_comm_request_read(module_id, values,
                                                        UI_SENSOR_VALUE_MAX);
@@ -221,18 +326,10 @@ static void sensor_poll_task(void* arg)
             if (value_count > 0) {
                 store_sensor_values(module_id, values, value_count);
             }
-            vTaskDelay(pdMS_TO_TICKS(20));
+            requested = true;
+            break; // Keep ESP-NOW requests strictly serial.
         }
-
-        // Dynamic wait: subtract time already spent polling so the total
-        // cycle stays close to UI_SENSOR_POLL_MS even when sensors are slow
-        // or offline (each timed-out request can take up to 600 ms).
-        TickType_t elapsed = xTaskGetTickCount() - poll_start;
-        TickType_t wait_ticks = pdMS_TO_TICKS(UI_SENSOR_POLL_MS);
-        if (elapsed < wait_ticks) {
-            vTaskDelay(wait_ticks - elapsed);
-        }
-        // else: requests already consumed the full interval, loop immediately
+        vTaskDelay(pdMS_TO_TICKS(requested ? 20 : 50));
     }
 }
 
@@ -257,6 +354,18 @@ esp_err_t ui_lvgl_init(void)
     if (disp == NULL) {
         ESP_LOGW(TAG, "LVGL display registration failed");
         return ESP_FAIL;
+    }
+
+    if (touch_is_initialized()) {
+        lv_indev_drv_init(&s_indev_drv);
+        s_indev_drv.type = LV_INDEV_TYPE_POINTER;
+        s_indev_drv.read_cb = touch_read_cb;
+        s_touch_indev = lv_indev_drv_register(&s_indev_drv);
+        if (s_touch_indev == NULL) {
+            ESP_LOGW(TAG, "LVGL touch input registration failed");
+        }
+    } else {
+        ESP_LOGW(TAG, "Touch unavailable; LVGL display remains active");
     }
 
     ui_peer_view_refresh(&s_status);

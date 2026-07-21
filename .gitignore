@@ -68,6 +68,7 @@ env/
 # Language Servers
 .clangd/
 .ccls-cache/
+.cache/
 compile_commands.json
 
 # Host-side test binaries (compiled locally, not firmware)

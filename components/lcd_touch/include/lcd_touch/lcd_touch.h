@@ -357,7 +357,7 @@ void lcd_set_rotation(uint8_t rotation);
  *
  * Performs:
  *   1. Reset sequence on the RST pin.
- *   2. I2C initialisation commands (wake, configuration).
+ *   2. Probes the configured I2C address after the reset stabilisation delay.
  *   3. Configures the INT pin as input with pull-up.
  *
  * @note  I2C_NUM_0 must be initialised before this call.
