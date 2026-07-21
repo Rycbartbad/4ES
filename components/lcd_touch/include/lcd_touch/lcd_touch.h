@@ -139,14 +139,14 @@ extern "C" {
 #define PIN_TOUCH_SCL GPIO_NUM_17
 #endif
 
-/** Touch reset (active low).  Must hold low ≥ 5 ms after power-up. */
+/** Optional touch reset (active low).  Set to -1 when not exposed. */
 #ifndef PIN_TOUCH_RST
-#define PIN_TOUCH_RST GPIO_NUM_18
+#define PIN_TOUCH_RST (-1)
 #endif
 
-/** Touch interrupt output (active low).  Pulses low when touch detected. */
+/** Optional touch interrupt.  Set to -1 to use periodic I2C polling. */
 #ifndef PIN_TOUCH_INT
-#define PIN_TOUCH_INT GPIO_NUM_21
+#define PIN_TOUCH_INT (-1)
 #endif
 
 /* ====================================================================

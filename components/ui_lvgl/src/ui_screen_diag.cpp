@@ -1,6 +1,7 @@
 #include "sdkconfig.h"
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,8 @@
 #include "ui_lvgl_internal.h"
 
 static constexpr uint32_t DETAIL_HISTORY_WINDOW_MS = 120000;
+static constexpr int UI_CARD_POOL_SIZE = 4;
+static constexpr int UI_CARD_HEIGHT = 74;
 
 static UiStatusState* s_state = NULL;
 static UiDeviceCard s_selected_card = {};
@@ -30,11 +33,15 @@ static lv_obj_t* s_device_list = NULL;
 static lv_obj_t* s_list_content = NULL;
 static lv_obj_t* s_list_title = NULL;
 static lv_obj_t* s_list_empty = NULL;
-static lv_obj_t* s_cards[UI_DEVICE_MAX] = {};
-static lv_obj_t* s_name_labels[UI_DEVICE_MAX] = {};
-static lv_obj_t* s_data_labels[UI_DEVICE_MAX] = {};
-static lv_obj_t* s_state_labels[UI_DEVICE_MAX] = {};
-static uint8_t s_list_module_ids[UI_DEVICE_MAX] = {};
+static lv_obj_t* s_list_spacer = NULL;
+static lv_obj_t* s_cards[UI_CARD_POOL_SIZE] = {};
+static lv_obj_t* s_name_labels[UI_CARD_POOL_SIZE] = {};
+static lv_obj_t* s_data_labels[UI_CARD_POOL_SIZE] = {};
+static lv_obj_t* s_state_labels[UI_CARD_POOL_SIZE] = {};
+static uint8_t s_list_module_ids[UI_CARD_POOL_SIZE] = {};
+static bool s_card_connected[UI_CARD_POOL_SIZE] = {};
+static int s_filtered_device_indices[UI_DEVICE_MAX] = {};
+static int s_filtered_count = 0;
 
 static lv_obj_t* s_detail = NULL;
 static lv_obj_t* s_detail_content = NULL;
@@ -63,6 +70,29 @@ static lv_style_t s_style_metric_card;
 static lv_style_t s_style_name;
 static lv_style_t s_style_data;
 static lv_style_t s_style_state;
+
+static void set_label_text_if_changed(lv_obj_t* label, const char* text)
+{
+    if (label == NULL || text == NULL) {
+        return;
+    }
+    const char* current = lv_label_get_text(label);
+    if (current == NULL || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
+
+static void set_label_text_fmt_if_changed(lv_obj_t* label,
+                                          const char* format, ...)
+{
+    char text[160];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    text[sizeof(text) - 1] = '\0';
+    set_label_text_if_changed(label, text);
+}
 
 static bool capability_has_buzzer(const char* capability)
 {
@@ -126,8 +156,9 @@ static void servo_slider_event_cb(lv_event_t* event)
         return;
     }
     if (code == LV_EVENT_VALUE_CHANGED && s_servo_dragging) {
-        lv_label_set_text_fmt(s_servo_target, "Selected: %d deg",
-                              (int)lv_slider_get_value(s_servo_slider));
+        set_label_text_fmt_if_changed(
+            s_servo_target, "Selected: %d deg",
+            (int)lv_slider_get_value(s_servo_slider));
         return;
     }
     if (code != LV_EVENT_RELEASED || !s_servo_dragging) {
@@ -140,8 +171,9 @@ static void servo_slider_event_cb(lv_event_t* event)
         return;
     }
     const uint8_t angle = (uint8_t)lv_slider_get_value(s_servo_slider);
-    lv_label_set_text_fmt(s_servo_target, "Target: %u deg (sending)",
-                          (unsigned)angle);
+    set_label_text_fmt_if_changed(s_servo_target,
+                                  "Target: %u deg (sending)",
+                                  (unsigned)angle);
     (void)espnow_comm_send_cmd(s_selected_card.module_id, CMD_SERVO_WRITE,
                               &angle, 1);
 }
@@ -153,6 +185,72 @@ static void set_card_style(lv_obj_t* card, bool connected)
     lv_obj_add_style(card,
                      connected ? &s_style_card_online : &s_style_card_offline,
                      LV_PART_MAIN);
+}
+
+static void refresh_visible_cards(void)
+{
+    if (s_state == NULL || s_list_content == NULL) {
+        return;
+    }
+
+    int first = (int)lv_obj_get_scroll_y(s_list_content) / UI_CARD_HEIGHT;
+    if (first < 0) first = 0;
+    if (first >= s_filtered_count) first = s_filtered_count - 1;
+    if (first < 0) first = 0;
+
+    for (int slot = 0; slot < UI_CARD_POOL_SIZE; slot++) {
+        const int filtered_index = first + slot;
+        if (filtered_index >= s_filtered_count) {
+            s_list_module_ids[slot] = 0;
+            lv_obj_add_flag(s_cards[slot], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+
+        const int device_index = s_filtered_device_indices[filtered_index];
+        if (device_index < 0 || device_index >= s_state->device_count) {
+            continue;
+        }
+        const UiDeviceCard* card = &s_state->devices[device_index];
+        const bool measurement = ui_sensor_capability_has_measurements(
+            card->capability);
+        const bool buzzer = capability_has_buzzer(card->capability);
+        const bool servo = capability_has_servo(card->capability);
+
+        const bool identity_changed =
+            s_list_module_ids[slot] != card->module_id;
+        s_list_module_ids[slot] = card->module_id;
+        if (identity_changed || s_card_connected[slot] != card->connected) {
+            set_card_style(s_cards[slot], card->connected);
+            s_card_connected[slot] = card->connected;
+        }
+        lv_obj_set_y(s_cards[slot], filtered_index * UI_CARD_HEIGHT);
+        set_label_text_fmt_if_changed(s_name_labels[slot], "%s  #%u",
+                                      card->name,
+                                      (unsigned)card->module_id);
+        if (measurement) {
+            set_label_text_fmt_if_changed(s_data_labels[slot], "Data: %s",
+                                          card->data);
+        } else if (servo && buzzer) {
+            set_label_text_if_changed(s_data_labels[slot],
+                                      "Servo / Buzzer control");
+        } else if (servo) {
+            set_label_text_if_changed(s_data_labels[slot], "Servo control");
+        } else if (buzzer) {
+            set_label_text_if_changed(s_data_labels[slot], "Buzzer control");
+        } else {
+            set_label_text_if_changed(s_data_labels[slot], "Control device");
+        }
+        set_label_text_if_changed(s_state_labels[slot],
+                                  card->connected ? "ONLINE" : "OFFLINE");
+        lv_obj_clear_flag(s_cards[slot], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void list_scroll_cb(lv_event_t* event)
+{
+    if (lv_event_get_code(event) == LV_EVENT_SCROLL) {
+        refresh_visible_cards();
+    }
 }
 
 static const UiDeviceCard* find_device_by_module(const UiStatusState* state,
@@ -254,7 +352,7 @@ static void card_event_cb(lv_event_t* event)
         return;
     }
     const int index = (int)(uintptr_t)lv_event_get_user_data(event);
-    if (index < 0 || index >= UI_DEVICE_MAX ||
+    if (index < 0 || index >= UI_CARD_POOL_SIZE ||
         s_list_module_ids[index] == 0) {
         return;
     }
@@ -327,10 +425,12 @@ static void update_detail(const UiStatusState* state)
         s_selected_card.connected = false;
     }
 
-    lv_label_set_text_fmt(s_detail_title, "%s  #%u", s_selected_card.name,
-                          (unsigned)s_selected_card.module_id);
-    lv_label_set_text(s_detail_status,
-                      s_selected_card.connected ? "ONLINE" : "OFFLINE");
+    set_label_text_fmt_if_changed(s_detail_title, "%s  #%u",
+                                  s_selected_card.name,
+                                  (unsigned)s_selected_card.module_id);
+    set_label_text_if_changed(
+        s_detail_status,
+        s_selected_card.connected ? "ONLINE" : "OFFLINE");
     lv_obj_set_style_text_color(
         s_detail_status,
         lv_color_hex(s_selected_card.connected ? 0x52D681 : 0xFF6B67),
@@ -343,14 +443,14 @@ static void update_detail(const UiStatusState* state)
     const bool has_servo = capability_has_servo(s_selected_card.capability);
     const bool has_actuator = has_buzzer || has_servo;
     if (!has_measurements) {
-        lv_label_set_text(s_detail_age, "Control device");
+        set_label_text_if_changed(s_detail_age, "Control device");
     } else if (s_selected_card.last_update_ms == 0) {
-        lv_label_set_text(s_detail_age, "Waiting for data");
+        set_label_text_if_changed(s_detail_age, "Waiting for data");
     } else {
         const uint32_t age_s =
             (now_ms - s_selected_card.last_update_ms) / 1000;
-        lv_label_set_text_fmt(s_detail_age, "Updated %lus ago",
-                              (unsigned long)age_s);
+        set_label_text_fmt_if_changed(s_detail_age, "Updated %lus ago",
+                                      (unsigned long)age_s);
     }
 
     espnow_command_status_t command_status = {};
@@ -361,53 +461,59 @@ static void update_detail(const UiStatusState* state)
         lv_obj_clear_flag(s_actuator_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_actuator_card, has_servo ? 166 : 108);
         if (has_servo && has_buzzer) {
-            lv_label_set_text(s_actuator_capability,
-                              "Capabilities: Servo, Buzzer");
+            set_label_text_if_changed(s_actuator_capability,
+                                      "Capabilities: Servo, Buzzer");
         } else if (has_servo) {
-            lv_label_set_text(s_actuator_capability, "Capability: Servo");
+            set_label_text_if_changed(s_actuator_capability,
+                                      "Capability: Servo");
         } else {
-            lv_label_set_text(s_actuator_capability, "Capability: Buzzer");
+            set_label_text_if_changed(s_actuator_capability,
+                                      "Capability: Buzzer");
         }
         if (has_command) {
             char command_text[64] = {};
             format_command(&command_status, command_text,
                            sizeof(command_text));
-            lv_label_set_text_fmt(s_actuator_command, "Last command\n%s",
-                                  command_text);
+            set_label_text_fmt_if_changed(s_actuator_command,
+                                          "Last command\n%s", command_text);
             switch (command_status.state) {
             case ESPNOW_COMMAND_PENDING:
-                lv_label_set_text(s_actuator_result, "Result: EXECUTING");
+                set_label_text_if_changed(s_actuator_result,
+                                          "Result: EXECUTING");
                 lv_obj_set_style_text_color(s_actuator_result,
                                             lv_color_hex(0xFFC857),
                                             LV_PART_MAIN);
                 break;
             case ESPNOW_COMMAND_CONFIRMED:
-                lv_label_set_text(s_actuator_result, "Result: CONFIRMED");
+                set_label_text_if_changed(s_actuator_result,
+                                          "Result: CONFIRMED");
                 lv_obj_set_style_text_color(s_actuator_result,
                                             lv_color_hex(0x52D681),
                                             LV_PART_MAIN);
                 break;
             case ESPNOW_COMMAND_SEND_FAILED:
-                lv_label_set_text_fmt(s_actuator_result, "Result: SEND FAILED (%s)",
-                                      esp_err_to_name(command_status.error));
+                set_label_text_fmt_if_changed(
+                    s_actuator_result, "Result: SEND FAILED (%s)",
+                    esp_err_to_name(command_status.error));
                 lv_obj_set_style_text_color(s_actuator_result,
                                             lv_color_hex(0xFF6B67),
                                             LV_PART_MAIN);
                 break;
             case ESPNOW_COMMAND_TIMED_OUT:
-                lv_label_set_text(s_actuator_result, "Result: NOT CONFIRMED");
+                set_label_text_if_changed(s_actuator_result,
+                                          "Result: NOT CONFIRMED");
                 lv_obj_set_style_text_color(s_actuator_result,
                                             lv_color_hex(0xFF6B67),
                                             LV_PART_MAIN);
                 break;
             default:
-                lv_label_set_text(s_actuator_result, "Result: --");
+                set_label_text_if_changed(s_actuator_result, "Result: --");
                 break;
             }
         } else {
-            lv_label_set_text(s_actuator_command,
-                              "Last command\nNo command yet");
-            lv_label_set_text(s_actuator_result, "Result: --");
+            set_label_text_if_changed(s_actuator_command,
+                                      "Last command\nNo command yet");
+            set_label_text_if_changed(s_actuator_result, "Result: --");
             lv_obj_set_style_text_color(s_actuator_result,
                                         lv_color_hex(0xAAB4BE), LV_PART_MAIN);
         }
@@ -426,12 +532,14 @@ static void update_detail(const UiStatusState* state)
                 command_status.payload_len >= 1) {
                 lv_slider_set_value(s_servo_slider,
                                     command_status.payload[0], LV_ANIM_OFF);
-                lv_label_set_text_fmt(s_servo_target, "Target: %u deg",
-                                      (unsigned)command_status.payload[0]);
+                set_label_text_fmt_if_changed(
+                    s_servo_target, "Target: %u deg",
+                    (unsigned)command_status.payload[0]);
             } else if (!s_servo_dragging &&
                        (!has_command || command_status.cmd_id != CMD_SERVO_WRITE)) {
                 lv_slider_set_value(s_servo_slider, 90, LV_ANIM_OFF);
-                lv_label_set_text(s_servo_target, "Target: not set");
+                set_label_text_if_changed(s_servo_target,
+                                          "Target: not set");
             }
         } else {
             lv_obj_add_flag(s_servo_target, LV_OBJ_FLAG_HIDDEN);
@@ -445,9 +553,10 @@ static void update_detail(const UiStatusState* state)
 
     const int value_count = has_measurements ? s_selected_card.value_count : 0;
     if (value_count <= 0 && !has_actuator) {
-        lv_label_set_text(s_detail_empty,
-                          has_measurements ? "Waiting for sensor data..."
-                                           : "Actuator device\nNo trend data");
+        set_label_text_if_changed(
+            s_detail_empty,
+            has_measurements ? "Waiting for sensor data..."
+                             : "Actuator device\nNo trend data");
         lv_obj_clear_flag(s_detail_empty, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_detail_empty, LV_OBJ_FLAG_HIDDEN);
@@ -464,17 +573,19 @@ static void update_detail(const UiStatusState* state)
 
         ui_metric_meta_t meta = {};
         ui_sensor_metric_meta(s_selected_card.capability, i, &meta);
-        lv_label_set_text(s_metric_names[i], meta.label);
+        set_label_text_if_changed(s_metric_names[i], meta.label);
         if (meta.binary) {
-            lv_label_set_text_fmt(s_metric_values[i], "%s  (%.0f)",
-                                  s_selected_card.values[i] >= 0.5 ? "ON" : "OFF",
-                                  s_selected_card.values[i]);
+            set_label_text_fmt_if_changed(
+                s_metric_values[i], "%s  (%.0f)",
+                s_selected_card.values[i] >= 0.5 ? "ON" : "OFF",
+                s_selected_card.values[i]);
         } else if (meta.unit[0] != '\0') {
-            lv_label_set_text_fmt(s_metric_values[i], "%.1f %s",
-                                  s_selected_card.values[i], meta.unit);
+            set_label_text_fmt_if_changed(s_metric_values[i], "%.1f %s",
+                                          s_selected_card.values[i],
+                                          meta.unit);
         } else {
-            lv_label_set_text_fmt(s_metric_values[i], "%.1f",
-                                  s_selected_card.values[i]);
+            set_label_text_fmt_if_changed(s_metric_values[i], "%.1f",
+                                          s_selected_card.values[i]);
         }
         update_chart(i, s_selected_card.module_id, meta.binary, now_ms);
     }
@@ -504,7 +615,7 @@ static void create_overview(lv_obj_t* screen)
     lv_label_set_text(sensor_label, "Sensors");
     lv_obj_align(sensor_label, LV_ALIGN_TOP_MID, 0, 34);
     s_sensor_count = lv_label_create(sensor_button);
-    lv_label_set_text(s_sensor_count, "0 devices");
+    lv_label_set_text(s_sensor_count, "0 known\n0 online");
     lv_obj_align(s_sensor_count, LV_ALIGN_BOTTOM_MID, 0, -34);
 
     lv_obj_t* actuator_button = lv_btn_create(s_home);
@@ -516,7 +627,7 @@ static void create_overview(lv_obj_t* screen)
     lv_label_set_text(actuator_label, "Actuators");
     lv_obj_align(actuator_label, LV_ALIGN_TOP_MID, 0, 34);
     s_actuator_count = lv_label_create(actuator_button);
-    lv_label_set_text(s_actuator_count, "0 devices");
+    lv_label_set_text(s_actuator_count, "0 known\n0 online");
     lv_obj_align(s_actuator_count, LV_ALIGN_BOTTOM_MID, 0, -34);
 
     s_device_list = lv_obj_create(screen);
@@ -553,6 +664,16 @@ static void create_overview(lv_obj_t* screen)
     lv_obj_set_style_pad_all(s_list_content, 5, LV_PART_MAIN);
     lv_obj_add_event_cb(s_list_content, list_gesture_cb,
                         LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(s_list_content, list_scroll_cb,
+                        LV_EVENT_SCROLL, NULL);
+
+    s_list_spacer = lv_obj_create(s_list_content);
+    lv_obj_set_pos(s_list_spacer, 0, 0);
+    lv_obj_set_size(s_list_spacer, 1, 1);
+    lv_obj_set_style_bg_opa(s_list_spacer, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_list_spacer, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_list_spacer, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(s_list_spacer, LV_OBJ_FLAG_SCROLLABLE);
 
     s_list_empty = lv_label_create(s_list_content);
     lv_label_set_text(s_list_empty, "No devices in this category");
@@ -560,7 +681,7 @@ static void create_overview(lv_obj_t* screen)
                                 LV_PART_MAIN);
     lv_obj_align(s_list_empty, LV_ALIGN_TOP_MID, 0, 55);
 
-    for (int i = 0; i < UI_DEVICE_MAX; i++) {
+    for (int i = 0; i < UI_CARD_POOL_SIZE; i++) {
         s_cards[i] = lv_obj_create(s_list_content);
         lv_obj_set_pos(s_cards[i], 0, i * 74);
         lv_obj_set_size(s_cards[i], 224, 68);
@@ -764,29 +885,37 @@ void ui_screen_diag_update(const UiStatusState* state)
         return;
     }
 
-    int sensor_count = 0;
-    int actuator_count = 0;
+    int sensor_known = 0;
+    int sensor_online = 0;
+    int actuator_known = 0;
+    int actuator_online = 0;
     for (int i = 0; i < state->device_count; i++) {
         const UiDeviceCard* device = &state->devices[i];
         const bool measurement = ui_sensor_capability_has_measurements(
             device->capability);
         const bool actuator = capability_has_buzzer(device->capability) ||
                               capability_has_servo(device->capability);
-        if (measurement) sensor_count++;
-        if (!measurement || actuator) actuator_count++;
+        if (measurement) {
+            sensor_known++;
+            if (device->connected) sensor_online++;
+        }
+        if (!measurement || actuator) {
+            actuator_known++;
+            if (device->connected) actuator_online++;
+        }
     }
-    lv_label_set_text_fmt(s_sensor_count, "%d device%s", sensor_count,
-                          sensor_count == 1 ? "" : "s");
-    lv_label_set_text_fmt(s_actuator_count, "%d device%s", actuator_count,
-                          actuator_count == 1 ? "" : "s");
-    lv_label_set_text(s_list_title,
-                      s_category == UI_CATEGORY_SENSORS
-                          ? "Sensors"
-                          : "Actuators");
+    set_label_text_fmt_if_changed(s_sensor_count, "%d known\n%d online",
+                                  sensor_known, sensor_online);
+    set_label_text_fmt_if_changed(s_actuator_count, "%d known\n%d online",
+                                  actuator_known, actuator_online);
+    set_label_text_if_changed(s_list_title,
+                              s_category == UI_CATEGORY_SENSORS
+                                  ? "Sensors"
+                                  : "Actuators");
 
-    int shown = 0;
-    memset(s_list_module_ids, 0, sizeof(s_list_module_ids));
-    for (int i = 0; i < state->device_count && shown < UI_DEVICE_MAX; i++) {
+    s_filtered_count = 0;
+    for (int i = 0; i < state->device_count &&
+                    s_filtered_count < UI_DEVICE_MAX; i++) {
         const UiDeviceCard* card = &state->devices[i];
         const bool measurement = ui_sensor_capability_has_measurements(
             card->capability);
@@ -798,31 +927,14 @@ void ui_screen_diag_update(const UiStatusState* state)
         if (!include) {
             continue;
         }
-
-        const int slot = shown++;
-        s_list_module_ids[slot] = card->module_id;
-        set_card_style(s_cards[slot], card->connected);
-        lv_label_set_text_fmt(s_name_labels[slot], "%s  #%u", card->name,
-                              (unsigned)card->module_id);
-        if (measurement) {
-            lv_label_set_text_fmt(s_data_labels[slot], "Data: %s", card->data);
-        } else if (servo && buzzer) {
-            lv_label_set_text(s_data_labels[slot], "Servo / Buzzer control");
-        } else if (servo) {
-            lv_label_set_text(s_data_labels[slot], "Servo control");
-        } else if (buzzer) {
-            lv_label_set_text(s_data_labels[slot], "Buzzer control");
-        } else {
-            lv_label_set_text(s_data_labels[slot], "Control device");
-        }
-        lv_label_set_text(s_state_labels[slot],
-                          card->connected ? "ONLINE" : "OFFLINE");
-        lv_obj_clear_flag(s_cards[slot], LV_OBJ_FLAG_HIDDEN);
+        s_filtered_device_indices[s_filtered_count++] = i;
     }
-    for (int i = shown; i < UI_DEVICE_MAX; i++) {
-        lv_obj_add_flag(s_cards[i], LV_OBJ_FLAG_HIDDEN);
-    }
-    if (shown == 0) {
+    lv_obj_set_height(s_list_spacer,
+                      s_filtered_count > 0
+                          ? s_filtered_count * UI_CARD_HEIGHT
+                          : 1);
+    refresh_visible_cards();
+    if (s_filtered_count == 0) {
         lv_obj_clear_flag(s_list_empty, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_list_empty, LV_OBJ_FLAG_HIDDEN);

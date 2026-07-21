@@ -19,6 +19,9 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# The device list and actuator detail UI need headroom for dynamic label text.
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+
 # ESP-NOW read responses can arrive a few hundred ms after refresh traffic
 # starts, especially while the web UI is polling. Keep the peer online across
 # occasional missed announces.
