@@ -15,9 +15,10 @@
 
 // ---------- parser limits ----------
 
-#define MAX_STMTS       256      // max statements per program / block
-#define MAX_CALL_ARGS   16      // max function-call arguments
-#define MAX_STMT_POOL   1024    // total ASTNode* pointers for all stmt/arg arrays
+#define MAX_PROGRAM_STMTS 128    // max top-level statements
+#define MAX_BLOCK_STMTS   64     // max statements in one nested block
+#define MAX_CALL_ARGS     16     // max function-call arguments
+#define MAX_STMT_POOL     1024   // total ASTNode* pointers for all stmt/arg arrays
 #define MAX_PARAM_ENTRIES 128   // total const char* slots for func-decl param arrays
                                 // (16 func defs × 8 params each = 128)
 
@@ -164,7 +165,7 @@ static ASTNode* parse_program(Parser* p)
     node->stmts      = NULL;
     node->stmt_count = 0;
 
-    ASTNode** stmts = alloc_ptrs(MAX_STMTS);
+    ASTNode** stmts = alloc_ptrs(MAX_PROGRAM_STMTS);
     if (!stmts) {
         error(p, "Statement pointer pool exhausted");
         p->parse_depth--;
@@ -173,10 +174,13 @@ static ASTNode* parse_program(Parser* p)
 
     int count = 0;
     while (!check(p, TOKEN_END) && !p->had_error) {
+        if (count >= MAX_PROGRAM_STMTS) {
+            error(p, "Too many top-level statements");
+            break;
+        }
         ASTNode* stmt = parse_statement(p);
         if (stmt) {
             stmts[count++] = stmt;
-            if (count >= MAX_STMTS) break;
         }
     }
 
@@ -418,7 +422,7 @@ static ASTNode* parse_block(Parser* p)
 
     Token open_tok = advance(p);        // consume TOKEN_LBRACE
 
-    ASTNode** stmts = alloc_ptrs(MAX_STMTS);
+    ASTNode** stmts = alloc_ptrs(MAX_BLOCK_STMTS);
     if (!stmts) {
         error(p, "Statement pointer pool exhausted");
         p->parse_depth--;
@@ -427,10 +431,13 @@ static ASTNode* parse_block(Parser* p)
 
     int count = 0;
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_END) && !p->had_error) {
+        if (count >= MAX_BLOCK_STMTS) {
+            error(p, "Too many statements in block");
+            break;
+        }
         ASTNode* stmt = parse_statement(p);
         if (stmt) {
             stmts[count++] = stmt;
-            if (count >= MAX_STMTS) break;
         }
     }
 
@@ -483,13 +490,7 @@ static ASTNode* parse_func_decl(Parser* p)
         return NULL;
     }
 
-    // Allocate persistent param array from the param pool
-    const char** params = alloc_params(CONFIG_MAX_FUNC_PARAMS);
-    if (!params) {
-        error(p, "Parameter pool exhausted");
-        p->parse_depth--;
-        return NULL;
-    }
+    const char* parsed_params[CONFIG_MAX_FUNC_PARAMS] = {};
     int param_count = 0;
 
     if (!check(p, TOKEN_RPAREN)) {
@@ -507,7 +508,7 @@ static ASTNode* parse_func_decl(Parser* p)
                 return NULL;
             }
             Token param_tok = advance(p);
-            params[param_count++] = param_tok.str;
+            parsed_params[param_count++] = param_tok.str;
         } while (match(p, TOKEN_COMMA));
     }
 
@@ -518,6 +519,18 @@ static ASTNode* parse_func_decl(Parser* p)
     }
 
     ASTNode* body = parse_block(p);     // function body must be a block
+
+    const char** params = NULL;
+    if (param_count > 0) {
+        params = alloc_params(param_count);
+        if (!params) {
+            error(p, "Parameter pool exhausted");
+            p->parse_depth--;
+            return NULL;
+        }
+        memcpy(params, parsed_params,
+               static_cast<size_t>(param_count) * sizeof(*params));
+    }
 
     ASTNode* node = ast_alloc_node();
     if (!node) {
@@ -953,14 +966,7 @@ static ASTNode* parse_call(Parser* p)
 
         const char* func_name = expr->str_val;
 
-        // Allocate args array from the ptr pool (persists beyond this call)
-        ASTNode** args = alloc_ptrs(MAX_CALL_ARGS);
-        if (!args) {
-            error(p, "Argument pointer pool exhausted");
-            sync(p);
-            p->parse_depth--;
-            return NULL;
-        }
+        ASTNode* parsed_args[MAX_CALL_ARGS] = {};
         int arg_count = 0;
 
         if (!check(p, TOKEN_RPAREN)) {
@@ -977,7 +983,7 @@ static ASTNode* parse_call(Parser* p)
                     p->parse_depth--;
                     return NULL;
                 }
-                args[arg_count++] = arg;
+                parsed_args[arg_count++] = arg;
             } while (match(p, TOKEN_COMMA));
         }
 
@@ -985,6 +991,18 @@ static ASTNode* parse_call(Parser* p)
             sync(p);
             p->parse_depth--;
             return NULL;
+        }
+
+        ASTNode** args = NULL;
+        if (arg_count > 0) {
+            args = alloc_ptrs(arg_count);
+            if (!args) {
+                error(p, "Argument pointer pool exhausted");
+                p->parse_depth--;
+                return NULL;
+            }
+            memcpy(args, parsed_args,
+                   static_cast<size_t>(arg_count) * sizeof(*args));
         }
 
         ASTNode* node = ast_alloc_node();

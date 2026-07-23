@@ -122,8 +122,7 @@ esp_err_t touch_init(void)
     ESP_LOGI(TAG, "CST816D init start");
     s_touch_ready = false;
 
-    /* ---- 1. Configure optional GPIOs ---- */
-#if PIN_TOUCH_RST >= 0
+    /* ---- 1. Configure GPIOs ---- */
     gpio_config_t rst_conf = {
         .pin_bit_mask = (1ULL << PIN_TOUCH_RST),
         .mode         = GPIO_MODE_OUTPUT,
@@ -132,9 +131,7 @@ esp_err_t touch_init(void)
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&rst_conf);
-#endif
 
-#if PIN_TOUCH_INT >= 0
     gpio_config_t int_conf = {
         .pin_bit_mask = (1ULL << PIN_TOUCH_INT),
         .mode         = GPIO_MODE_INPUT,
@@ -143,21 +140,15 @@ esp_err_t touch_init(void)
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&int_conf);
-#endif
 
     /* ---- 2. Hardware reset sequence ---- */
-    /* Use hardware reset when exposed; four-wire modules power-reset themselves. */
-#if PIN_TOUCH_RST >= 0
+    /* Hold RESET low for ≥5 ms, then release and wait for the chip to stabilise */
     gpio_set_level(PIN_TOUCH_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(5));
     gpio_set_level(PIN_TOUCH_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
     gpio_set_level(PIN_TOUCH_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(120));
-#else
-    ESP_LOGI(TAG, "No touch RESET pin; using power-on reset");
-    vTaskDelay(pdMS_TO_TICKS(200));
-#endif
 
     /* ---- 3. Initialise I2C bus (I2C_NUM_0) ---- */
     i2c_master_bus_config_t bus_cfg = {
@@ -197,13 +188,9 @@ esp_err_t touch_init(void)
         return ret;
     }
 
-    /* ---- 4. Configure optional INT; LVGL otherwise polls over I2C ---- */
-#if PIN_TOUCH_INT >= 0
+    /* ---- 4. Configure INT pin as input with pull-up ---- */
     gpio_set_direction(PIN_TOUCH_INT, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PIN_TOUCH_INT, GPIO_PULLUP_ONLY);
-#else
-    ESP_LOGI(TAG, "No touch INT pin; using polling mode");
-#endif
 
     s_touch_ready = true;
     ESP_LOGI(TAG, "CST816D init done");
@@ -279,14 +266,10 @@ bool touch_is_initialized(void)
 void touch_reset(void)
 {
     ESP_LOGI(TAG, "Touch reset");
-#if PIN_TOUCH_RST >= 0
     gpio_set_level(PIN_TOUCH_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(PIN_TOUCH_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
-#else
-    ESP_LOGW(TAG, "Touch RESET pin is not connected; reset skipped");
-#endif
     s_last_gesture = TOUCH_GESTURE_NONE;
 }
 

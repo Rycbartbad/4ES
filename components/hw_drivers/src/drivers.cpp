@@ -1,10 +1,13 @@
 #include "sdkconfig.h"
 #include "hw_drivers/drivers.h"
+#include "hw_drivers/mic_level.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/i2s_std.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char* TAG = "hw_drivers";
 
@@ -22,6 +25,8 @@ static const char* TAG = "hw_drivers";
 
 static i2s_chan_handle_t s_mic_rx_chan = NULL;
 static bool s_mic_ready = false;
+static StaticSemaphore_t s_mic_mutex_storage;
+static SemaphoreHandle_t s_mic_mutex = NULL;
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static bool s_adc1_ready = false;
 
@@ -131,7 +136,17 @@ void hw_pwm_write(uint8_t pin, int val)
 
 esp_err_t hw_mic_init(void)
 {
+    if (s_mic_mutex == NULL) {
+        s_mic_mutex = xSemaphoreCreateMutexStatic(&s_mic_mutex_storage);
+        if (s_mic_mutex == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (xSemaphoreTake(s_mic_mutex, pdMS_TO_TICKS(MIC_I2S_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     if (s_mic_ready) {
+        xSemaphoreGive(s_mic_mutex);
         return ESP_OK;
     }
 
@@ -144,6 +159,7 @@ esp_err_t hw_mic_init(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S mic channel alloc failed: %d", ret);
         s_mic_rx_chan = NULL;
+        xSemaphoreGive(s_mic_mutex);
         return ret;
     }
 
@@ -170,6 +186,7 @@ esp_err_t hw_mic_init(void)
         ESP_LOGE(TAG, "I2S mic std init failed: %d", ret);
         i2s_del_channel(s_mic_rx_chan);
         s_mic_rx_chan = NULL;
+        xSemaphoreGive(s_mic_mutex);
         return ret;
     }
 
@@ -178,6 +195,7 @@ esp_err_t hw_mic_init(void)
         ESP_LOGE(TAG, "I2S mic enable failed: %d", ret);
         i2s_del_channel(s_mic_rx_chan);
         s_mic_rx_chan = NULL;
+        xSemaphoreGive(s_mic_mutex);
         return ret;
     }
 
@@ -185,54 +203,48 @@ esp_err_t hw_mic_init(void)
     ESP_LOGI(TAG, "INMP441 mic ready: SCK=%d WS=%d SD=%d sample_rate=%d",
              (int)MIC_I2S_SCK_PIN, (int)MIC_I2S_WS_PIN, (int)MIC_I2S_SD_PIN,
              CONFIG_MIC_I2S_SAMPLE_RATE_HZ);
+    xSemaphoreGive(s_mic_mutex);
     return ESP_OK;
 }
 
-double hw_mic_level(void)
+esp_err_t hw_mic_read_level(double* out_percent)
 {
+    if (out_percent == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_percent = 0.0;
+
     if (!s_mic_ready) {
-        if (hw_mic_init() != ESP_OK) {
-            return 0.0;
+        esp_err_t init_ret = hw_mic_init();
+        if (init_ret != ESP_OK) {
+            return init_ret;
         }
+    }
+
+    if (xSemaphoreTake(s_mic_mutex,
+                       pdMS_TO_TICKS(MIC_I2S_TIMEOUT_MS + 50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
 
     int32_t samples[MIC_I2S_READ_SAMPLES];
     size_t bytes_read = 0;
     esp_err_t ret = i2s_channel_read(s_mic_rx_chan, samples, sizeof(samples),
                                      &bytes_read, MIC_I2S_TIMEOUT_MS);
+    xSemaphoreGive(s_mic_mutex);
     if (ret != ESP_OK || bytes_read == 0) {
         ESP_LOGW(TAG, "I2S mic read failed: ret=%d bytes=%u",
                  ret, (unsigned)bytes_read);
-        return 0.0;
+        return ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE;
     }
 
-    int sample_count = (int)(bytes_read / sizeof(samples[0]));
-    uint64_t left_sum = 0;
-    uint64_t right_sum = 0;
-    int left_count = 0;
-    int right_count = 0;
+    *out_percent = hw_mic_calculate_level_percent(
+        samples, bytes_read / sizeof(samples[0]));
+    return ESP_OK;
+}
 
-    for (int i = 0; i < sample_count; i += 2) {
-        int32_t left = samples[i] >> 8;  // INMP441 24-bit data in a 32-bit slot.
-        if (left < 0) left = -left;
-        left_sum += (uint32_t)left;
-        left_count++;
-
-        if (i + 1 < sample_count) {
-            int32_t right = samples[i + 1] >> 8;
-            if (right < 0) right = -right;
-            right_sum += (uint32_t)right;
-            right_count++;
-        }
-    }
-
-    uint64_t left_avg = left_count > 0 ? left_sum / (uint64_t)left_count : 0;
-    uint64_t right_avg = right_count > 0 ? right_sum / (uint64_t)right_count : 0;
-    uint64_t level = left_avg > right_avg ? left_avg : right_avg;
-
-    double percent = ((double)level * 100.0) / 8388608.0;
-    if (percent > 100.0) {
-        percent = 100.0;
-    }
+double hw_mic_level(void)
+{
+    double percent = 0.0;
+    (void)hw_mic_read_level(&percent);
     return percent;
 }

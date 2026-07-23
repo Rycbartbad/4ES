@@ -88,3 +88,4 @@ Write-Host "Using $ESPPORT"
 
 不同从机不是只换设备名；编译前还要选择对应硬件宏。Doorbell 的完整配置、烧录和验证步骤见 [docs/slave_firmware_guide.md](docs/slave_firmware_guide.md)。板载触摸界面的详细预期效果见 [docs/lvgl_requirements.md](docs/lvgl_requirements.md)。
 
+面向最终用户的首次连接、AI 配置、设备控制、麦克风检测和故障排查见 [ESP-LEGO 用户手册](docs/user_manual.md)。

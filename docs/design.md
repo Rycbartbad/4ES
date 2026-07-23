@@ -313,6 +313,8 @@ static FuncObj func_pool[FUNC_POOL_SIZE];
 
 > **intern_table 指针生命周期**: 标识符字符串的源码缓冲区（来自 Lexer 的 input）必须在整个执行期间存活，`env_restore_pristine` 不释放字符串。如果 script_io 释放了缓冲区，后续 env_get 访问 `Binding.name` 将产生悬空指针。实现需确保 `ExecutionContext` 持有输入脚本的引用或拷贝。
 
+> **语句/参数指针池**: 解析器的 `ASTNode*` 指针池每次解析前复位。顶层程序最多保留 128 条语句，单个嵌套块最多保留 64 条；函数调用参数和函数形参按实际数量分配。禁止为每个块固定预留 256 条、为每次调用固定预留 16 个参数，否则普通的 `while + if/else` 脚本会在仅四个块时耗尽 1024 槽指针池。达到单块上限必须显式报错，不得静默截断脚本。
+
 ### 6.7 ExecutionContext
 
 所有运行时状态收敛到 `ExecutionContext` 结构体，显式传递，消除全局变量：
@@ -1444,13 +1446,14 @@ components/web_console/
 | 端点 | 方法 | 功能 | 请求/响应 |
 |------|------|------|-----------|
 | `/` | GET | 返回静态 HTML 配置页面 | HTML (含内联 CSS/JS, 无外部依赖) |
-| `/api/status` | GET | 当前系统状态 | `{"peers": N, "wifi_configured": bool, "llm_configured": bool, "script_running": bool}` |
+| `/api/status` | GET | 当前系统状态 | `{"peer_count":在线数, "known_count":已知数, "peers":[{"id","name","capability","online"}], "wifi_configured":bool, "llm_configured":bool, "script_running":bool}` |
+| `/api/mic` | GET | 按需读取主控本地 INMP441 电平 | `{"status":"ok", "level_percent":0.42}`；读取失败时返回 `status=error` 和 ESP-IDF 错误名 |
 | `/api/config` | GET | 获取当前完整配置 | `{"wifi_ssid":"...", "wifi_configured":bool, "llm_url":"...", "llm_model":"..."}` (key 字段用 `"***"` 掩码, `wifi_pass` 不返回) |
 | `/api/config/wifi` | POST | 仅保存 WiFi 配置到 NVS | 表单字段: `wifi_ssid, wifi_pass` |
 | `/api/config/llm` | POST | 仅保存 LLM 配置到 NVS | 表单字段: `llm_url, llm_key, llm_model` |
 | `/api/scan` | GET | 扫描附近 Wi-Fi | `[{"ssid":"...","rssi":-50}, ...]` (按 RSSI 降序, 去重) |
 | `/api/ai` | POST | 自然语言 → LLM → 脚本执行 | `{"prompt":"每 5 秒读温度"}` → `{"status":"ok","script":"...", "log":"..."}` |
-| `/api/script` | POST | 直接注入脚本 | `{"script":"while(true){...}"}` → 中止当前脚本 + 执行新脚本 |
+| `/api/script` | POST | 规范化并注入脚本 | `{"script":"var i=0; while(i<20){...}"}` → 校验格式与循环边界 → 中止当前脚本 + 执行新脚本 |
 | `/api/exec_log` | GET | 获取 print 输出日志 | `{"lines":["temp=25.3","fan=on",...]}` (环形缓冲区最近 N 条) |
 
 > **API Key 安全**: 仅 `/api/config/llm` POST 接受 `llm_key` 字段并写入 NVS，`/api/config/wifi` POST **不接受** `llm_key`，从根本上避免 WiFi 配置操作意外接触 API key。GET `/api/config` 响应中**不返回** key 值（仅返回 `"***"` 掩码），`wifi_pass` **不返回**（写入后不可读），防止通过浏览器查看已保存的密钥。
@@ -1524,7 +1527,7 @@ API Request (OpenAI-compatible):
   }
 ```
 
-**响应解析**: 使用 `cJSON` 解析 LLM 返回的 JSON，通过 event_handler 在 `esp_http_client_perform()` 执行过程中实时捕获 `HTTP_EVENT_ON_DATA` 数据块，组合为完整响应体。优先解析 `choices[0].message.tool_calls`（见 §16.6.1）；若无工具调用，则回退到 `choices[0].message.content`，再通过 `extract_script_from_response()` 去除 markdown 代码块标记（` ``` `、` ```javascript ` 等），提取纯脚本代码。
+**响应解析**: 使用 `cJSON` 解析 LLM 返回的 JSON，通过 event_handler 在 `esp_http_client_perform()` 执行过程中实时捕获 `HTTP_EVENT_ON_DATA` 数据块，组合为完整响应体。优先解析 `choices[0].message.tool_calls`（见 §16.6.1）；若无工具调用，则回退到 `choices[0].message.content`。两条路径最终都进入统一脚本规范化器：接受纯 DSL、Markdown 代码块、`{"script":"..."}` 与代码块包裹的 JSON，完成 JSON 字符串反转义，并拒绝空内容、损坏包装、超长内容及 `while(true)` / `while(1)` 无限循环。`/api/script` 在入队前再次执行同一校验，作为手机模式和手动注入路径的固件兜底。
 
 > **System Prompt 中的设备列表动态注入**: 每次调用 `/api/ai` 时，先调用 `list_peers()` 获取当前在线设备，拼入 System Prompt。确保 LLM 始终知道当前有哪些设备可用。
 

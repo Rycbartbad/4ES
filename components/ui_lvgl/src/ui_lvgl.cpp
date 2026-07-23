@@ -17,7 +17,10 @@
 static const char* TAG = "ui_lvgl";
 
 static constexpr uint32_t UI_DRAW_BUF_ROWS = 20;
-static constexpr uint32_t UI_TASK_DELAY_MS = 5;
+// Sleep for at least one scheduler tick.  With CONFIG_FREERTOS_HZ=100,
+// pdMS_TO_TICKS(5) rounded down to zero and made this task spin on CPU0,
+// starving the idle task and destabilising SoftAP/DHCP handling.
+static constexpr TickType_t UI_TASK_DELAY_TICKS = 1;
 static constexpr uint32_t UI_REFRESH_MS = 250;
 static constexpr uint32_t UI_PEER_REFRESH_MS = 500;
 static constexpr uint32_t UI_SENSOR_POLL_MS = 2000;
@@ -284,7 +287,7 @@ static void ui_task(void* arg)
             last_ui_update = now;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(UI_TASK_DELAY_MS));
+        vTaskDelay(UI_TASK_DELAY_TICKS);
     }
 }
 

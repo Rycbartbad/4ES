@@ -117,10 +117,36 @@ static void test_error_syntax(void) {
     TEST_ASSERT(p.had_error); TEST_PASS();
 }
 
+static void test_generated_monitoring_script(void) {
+    TEST("Parser: generated nested monitoring script fits pointer pool");
+    Lexer l; Parser p;
+    const char* source =
+        "var count = 0;\n"
+        "while (count < 5) {\n"
+        "  var humidity = read_sensor(\"humidity\");\n"
+        "  print(\"Humidity: \" + humidity);\n"
+        "  if (humidity > 20) {\n"
+        "    print(\"Humidity > 20, turning on water pump\");\n"
+        "    send_motor(\"pump\", 100);\n"
+        "  } else {\n"
+        "    send_motor(\"pump\", 0);\n"
+        "  }\n"
+        "  sleep(5000);\n"
+        "  count = count + 1;\n"
+        "}\n"
+        "send_motor(\"pump\", 0);\n"
+        "print(\"Monitoring complete\");";
+    ASTNode* ast = parse_source(&p, &l, source);
+    TEST_ASSERT(!p.had_error);
+    TEST_ASSERT_NOT_NULL(ast);
+    TEST_ASSERT_EQUAL_INT(4, ast->stmt_count);
+    TEST_PASS();
+}
+
 void test_parser(void) {
     printf("\n[Parser Tests]\n");
     test_empty(); test_var_decl(); test_if_else(); test_while();
     test_func_def(); test_func_call(); test_return(); test_precedence();
     test_bool_literals(); test_string(); test_unary(); test_block();
-    test_error_syntax();
+    test_error_syntax(); test_generated_monitoring_script();
 }

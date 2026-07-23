@@ -18,6 +18,8 @@ extern void test_environment(void);
 extern void test_builtins(void);
 extern void test_touch_logic(void);
 extern void test_ui_sensor_model(void);
+extern void test_mic_level(void);
+extern void test_script_normalizer(void);
 
 int main(void) {
     printf("ESP-LEGO Unit Tests\n==================\n\n");
@@ -30,5 +32,7 @@ int main(void) {
     test_builtins();
     test_touch_logic();
     test_ui_sensor_model();
+    test_mic_level();
+    test_script_normalizer();
     return test_runner_summary();
 }

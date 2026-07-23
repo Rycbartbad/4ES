@@ -19,6 +19,7 @@
 
 #include "web_console/llm_client.h"
 #include "web_console/script_inject.h"
+#include "web_console/script_normalizer.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -592,12 +593,13 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- read_sensor() ALWAYS returns a single NUMBER — use directly, no list_get needed. It reads the LCD-cached value.\n"
         "- For single-value sensors: you can use read_sensor(id) directly, e.g. var t = read_sensor(1); if (t > 30) { ... }\n"
         "- Example correct with read_sensor: var val = read_sensor(\"sensor\"); if (val == 1) { buzzer_beep(\"doorbell\", 3); }\n"
-        "CRITICAL — polling loops:\n"
-        "- For continuous sensor monitoring, you MUST wrap the polling in while(true), NOT while(condition).\n"
-        "- WRONG: while (rain == 1) { ... }  ← loop never starts if rain != 1 on first read\n"
-        "- CORRECT: while (true) { var rain = read_sensor(\"sensor\"); if (rain == 1) { buzzer_beep(\"doorbell\", 1); servo_write(\"servo\", 90); sleep(500); servo_write(\"servo\", 0); } sleep(500); }\n"
-        "- The condition check (if, ==, etc.) goes INSIDE the while(true) body, not in the while() header.\n"
-        "- Always include sleep() inside polling loops to avoid flooding ESP-NOW.\n\n"
+        "CRITICAL — polling loops and execution time:\n"
+        "- Every script has a hard 30-second safety timeout. Generate finite logic that completes within 25 seconds.\n"
+        "- NEVER generate while(true) or while(1). For monitoring, use a counter-bounded loop.\n"
+        "- WRONG: while (rain == 1) { ... }  ← loop may never start, and the sensor is not refreshed\n"
+        "- CORRECT: var sample = 0; while (sample < 20) { var rain = read_sensor(\"sensor\"); if (rain == 1) { buzzer_beep(\"doorbell\", 1); } sleep(1000); sample = sample + 1; }\n"
+        "- The condition check goes inside the bounded polling body; always include sleep() to avoid flooding ESP-NOW.\n"
+        "- If the user asks to monitor forever or continuously, generate the longest safe bounded run under 25 seconds and print(\"Monitoring window complete\") at the end.\n\n"
         "- read_sensor(id) -> number    read cached remote sensor value (id=module_id number OR peer name string; always single number, no list_get)\n"
         "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
         "- mic_level() -> number        local INMP441 microphone level, 0-100\n"
@@ -671,12 +673,16 @@ int llm_client_build_system_prompt(char* buf, int max_len)
     // Resource limits
     prompt_append(buf, max_len, &pos,
         "Resource limits:\n"
-        "- Max 5000 remote_read() calls per script\n"
-        "- Max 10000 loop iterations\n"
-        "- Max 50000 statements\n"
+        "- Max %d sensor reads per script; keep bounded monitoring at or below this count\n"
+        "- Max %d loop iterations\n"
+        "- Max %d executed statements\n"
         "- Generate ONLY valid script code, no explanations.\n"
         "- Do NOT use markdown code fences (no ```).\n"
-        "- Output ONLY the raw script source code.\n");
+        "- Do NOT wrap the script in JSON or a script field.\n"
+        "- Output ONLY the raw script source code.\n",
+        CONFIG_MAX_SENSOR_CALLS_PER_SCRIPT,
+        CONFIG_MAX_LOOP_ITERATIONS,
+        CONFIG_MAX_EXEC_STATEMENTS);
 
     if (pos >= max_len) {
         buf[max_len - 1] = '\0';
@@ -691,38 +697,12 @@ int llm_client_build_system_prompt(char* buf, int max_len)
 
 static void extract_script_from_response(const char* response, char* script_out, int max_len)
 {
-    const char* start = response;
-    const char* end   = NULL;
-
-    // Find ``` marker (if present)
-    const char* fence = strstr(response, "```");
-    if (fence != NULL) {
-        // Skip past ``` and optional language tag
-        start = fence + 3;
-        while (*start == ' ' || *start == '\t') start++;
-        // Skip language identifier (e.g. "javascript", "js", "c")
-        while (*start && *start != '\n' && *start != '\r') start++;
-        // Skip the newline
-        if (*start == '\r') start++;
-        if (*start == '\n') start++;
-
-        // Find closing fence
-        const char* end_fence = strstr(start, "```");
-        if (end_fence != NULL) {
-            end = end_fence;
-        } else {
-            end = start + strlen(start);
-        }
-    } else {
-        // No fences — use entire response as script
-        end = response + strlen(response);
+    const int result = script_normalize_response(response, script_out, max_len);
+    if (result != SCRIPT_NORMALIZE_OK) {
+        script_out[0] = '\0';
+        ESP_LOGW(TAG, "Rejected LLM script response: %s",
+                 script_normalize_error(result));
     }
-
-    // Copy into output buffer
-    int len = (int)(end - start);
-    if (len > max_len - 1) len = max_len - 1;
-    strncpy(script_out, start, (size_t)len);
-    script_out[len] = '\0';
 }
 
 // ====================================================================
