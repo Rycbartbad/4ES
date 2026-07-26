@@ -25,6 +25,7 @@ static constexpr uint32_t UI_REFRESH_MS = 250;
 static constexpr uint32_t UI_PEER_REFRESH_MS = 500;
 static constexpr uint32_t UI_SENSOR_POLL_MS = 2000;
 static constexpr uint32_t UI_SELECTED_SENSOR_POLL_MS = 1000;
+static constexpr int UI_HORIZONTAL_SWIPE_MIN_PX = 40;
 
 static lv_disp_draw_buf_t s_draw_buf;
 static lv_color_t s_draw_buf_1[LCD_WIDTH * UI_DRAW_BUF_ROWS];
@@ -36,6 +37,7 @@ static TaskHandle_t s_ui_task_handle = NULL;
 static TaskHandle_t s_poll_task_handle = NULL;
 static bool s_running = false;
 static bool s_started = false;
+static bool s_pending_back_swipe = false;
 
 static UiStatusState s_status = {};
 
@@ -120,6 +122,8 @@ static void touch_read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data)
 {
     (void)drv;
     static lv_point_t last_point = {0, 0};
+    static lv_point_t press_start = {0, 0};
+    static bool was_pressed = false;
 
     data->point = last_point;
     data->state = LV_INDEV_STATE_RELEASED;
@@ -130,11 +134,26 @@ static void touch_read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data)
     touch_data_t touch = {};
     if (touch_read(&touch) != ESP_OK || touch.points == 0 ||
         !touch.p[0].active) {
+        if (was_pressed) {
+            const int dx = (int)last_point.x - (int)press_start.x;
+            const int dy = (int)last_point.y - (int)press_start.y;
+            const int abs_dx = dx < 0 ? -dx : dx;
+            const int abs_dy = dy < 0 ? -dy : dy;
+            if (abs_dx >= UI_HORIZONTAL_SWIPE_MIN_PX &&
+                abs_dx > abs_dy) {
+                s_pending_back_swipe = true;
+            }
+        }
+        was_pressed = false;
         return;
     }
 
     last_point.x = (lv_coord_t)touch.p[0].x;
     last_point.y = (lv_coord_t)touch.p[0].y;
+    if (!was_pressed) {
+        press_start = last_point;
+        was_pressed = true;
+    }
     data->point = last_point;
     data->state = LV_INDEV_STATE_PRESSED;
 }
@@ -276,6 +295,10 @@ static void ui_task(void* arg)
 
     while (1) {
         lv_timer_handler();
+        if (s_pending_back_swipe) {
+            s_pending_back_swipe = false;
+            ui_screen_diag_navigate_back();
+        }
 
         TickType_t now = xTaskGetTickCount();
         if (now - last_peer_update >= pdMS_TO_TICKS(UI_PEER_REFRESH_MS)) {

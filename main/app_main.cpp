@@ -172,7 +172,11 @@ extern "C" void app_main(void)
             ESP_LOGW(TAG, "LCD/Touch init skipped (%s), continuing",
                      esp_err_to_name(lcd_ret));
         } else {
-            ESP_LOGI(TAG, "LCD + Touch ready");
+            if (touch_is_initialized()) {
+                ESP_LOGI(TAG, "LCD + Touch ready");
+            } else {
+                ESP_LOGW(TAG, "LCD ready; touch unavailable");
+            }
             lcd_ready = true;
         }
     }

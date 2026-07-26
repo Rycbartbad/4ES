@@ -34,6 +34,7 @@ typedef struct {
 
 void ui_screen_diag_create(UiStatusState* state);
 void ui_screen_diag_update(const UiStatusState* state);
+void ui_screen_diag_navigate_back(void);
 void ui_peer_view_refresh(UiStatusState* state);
 int ui_lvgl_copy_sensor_values(uint8_t module_id, double* out_values,
                                int max_values);

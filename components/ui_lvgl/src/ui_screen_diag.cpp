@@ -206,33 +206,9 @@ static void close_event_cb(lv_event_t* event)
     }
 }
 
-static void detail_gesture_cb(lv_event_t* event)
-{
-    if (lv_event_get_code(event) != LV_EVENT_GESTURE) {
-        return;
-    }
-    lv_indev_t* indev = lv_indev_get_act();
-    if (indev != NULL && lv_indev_get_gesture_dir(indev) == LV_DIR_RIGHT) {
-        close_detail();
-        lv_indev_wait_release(indev);
-    }
-}
-
-static void list_gesture_cb(lv_event_t* event)
-{
-    if (lv_event_get_code(event) != LV_EVENT_GESTURE) {
-        return;
-    }
-    lv_indev_t* indev = lv_indev_get_act();
-    if (indev != NULL && lv_indev_get_gesture_dir(indev) == LV_DIR_RIGHT) {
-        show_home();
-        lv_indev_wait_release(indev);
-    }
-}
-
 static void home_event_cb(lv_event_t* event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+    if (lv_event_get_code(event) != LV_EVENT_PRESSED) {
         return;
     }
     s_category = (UiDeviceCategory)(uintptr_t)lv_event_get_user_data(event);
@@ -243,7 +219,7 @@ static void home_event_cb(lv_event_t* event)
 
 static void home_back_event_cb(lv_event_t* event)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED) {
+    if (lv_event_get_code(event) == LV_EVENT_PRESSED) {
         show_home();
     }
 }
@@ -498,7 +474,7 @@ static void create_overview(lv_obj_t* screen)
     lv_obj_t* sensor_button = lv_btn_create(s_home);
     lv_obj_set_pos(sensor_button, 6, 43);
     lv_obj_set_size(sensor_button, 111, 174);
-    lv_obj_add_event_cb(sensor_button, home_event_cb, LV_EVENT_CLICKED,
+    lv_obj_add_event_cb(sensor_button, home_event_cb, LV_EVENT_PRESSED,
                         (void*)(uintptr_t)UI_CATEGORY_SENSORS);
     lv_obj_t* sensor_label = lv_label_create(sensor_button);
     lv_label_set_text(sensor_label, "Sensors");
@@ -510,7 +486,7 @@ static void create_overview(lv_obj_t* screen)
     lv_obj_t* actuator_button = lv_btn_create(s_home);
     lv_obj_set_pos(actuator_button, 123, 43);
     lv_obj_set_size(actuator_button, 111, 174);
-    lv_obj_add_event_cb(actuator_button, home_event_cb, LV_EVENT_CLICKED,
+    lv_obj_add_event_cb(actuator_button, home_event_cb, LV_EVENT_PRESSED,
                         (void*)(uintptr_t)UI_CATEGORY_ACTUATORS);
     lv_obj_t* actuator_label = lv_label_create(actuator_button);
     lv_label_set_text(actuator_label, "Actuators");
@@ -528,14 +504,11 @@ static void create_overview(lv_obj_t* screen)
     lv_obj_set_style_border_width(s_device_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_device_list, 0, LV_PART_MAIN);
     lv_obj_clear_flag(s_device_list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_device_list, list_gesture_cb,
-                        LV_EVENT_GESTURE, NULL);
-
     lv_obj_t* back_button = lv_btn_create(s_device_list);
     lv_obj_set_pos(back_button, 2, 2);
-    lv_obj_set_size(back_button, 36, 34);
+    lv_obj_set_size(back_button, 48, 38);
     lv_obj_add_event_cb(back_button, home_back_event_cb,
-                        LV_EVENT_CLICKED, NULL);
+                        LV_EVENT_PRESSED, NULL);
     lv_obj_t* back_label = lv_label_create(back_button);
     lv_label_set_text(back_label, LV_SYMBOL_LEFT);
     lv_obj_center(back_label);
@@ -551,9 +524,6 @@ static void create_overview(lv_obj_t* screen)
     lv_obj_set_style_bg_opa(s_list_content, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_list_content, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_list_content, 5, LV_PART_MAIN);
-    lv_obj_add_event_cb(s_list_content, list_gesture_cb,
-                        LV_EVENT_GESTURE, NULL);
-
     s_list_empty = lv_label_create(s_list_content);
     lv_label_set_text(s_list_empty, "No devices in this category");
     lv_obj_set_style_text_color(s_list_empty, lv_color_hex(0xAAB4BE),
@@ -568,8 +538,6 @@ static void create_overview(lv_obj_t* screen)
         lv_obj_add_flag(s_cards[i], LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_cards[i], card_event_cb, LV_EVENT_CLICKED,
                             (void*)(uintptr_t)i);
-        lv_obj_add_event_cb(s_cards[i], list_gesture_cb,
-                            LV_EVENT_GESTURE, NULL);
         set_card_style(s_cards[i], false);
 
         s_name_labels[i] = lv_label_create(s_cards[i]);
@@ -591,6 +559,7 @@ static void create_overview(lv_obj_t* screen)
         lv_obj_align(s_state_labels[i], LV_ALIGN_TOP_RIGHT, 0, 0);
         lv_obj_add_flag(s_cards[i], LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_move_foreground(back_button);
     lv_obj_add_flag(s_device_list, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -604,7 +573,6 @@ static void create_detail(lv_obj_t* screen)
     lv_obj_set_style_border_width(s_detail, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_detail, 0, LV_PART_MAIN);
     lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_detail, detail_gesture_cb, LV_EVENT_GESTURE, NULL);
 
     s_detail_title = lv_label_create(s_detail);
     lv_obj_add_style(s_detail_title, &s_style_title, LV_PART_MAIN);
@@ -634,8 +602,6 @@ static void create_detail(lv_obj_t* screen)
     lv_obj_set_style_bg_opa(s_detail_content, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_detail_content, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_detail_content, 5, LV_PART_MAIN);
-    lv_obj_add_event_cb(s_detail_content, detail_gesture_cb,
-                        LV_EVENT_GESTURE, NULL);
 
     s_detail_empty = lv_label_create(s_detail_content);
     lv_label_set_text(s_detail_empty, "Waiting for sensor data...");
@@ -648,8 +614,6 @@ static void create_detail(lv_obj_t* screen)
     lv_obj_set_pos(s_actuator_card, 0, 0);
     lv_obj_set_size(s_actuator_card, 224, 166);
     lv_obj_clear_flag(s_actuator_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_actuator_card, detail_gesture_cb,
-                        LV_EVENT_GESTURE, NULL);
 
     s_actuator_capability = lv_label_create(s_actuator_card);
     lv_obj_set_pos(s_actuator_capability, 0, 0);
@@ -684,8 +648,6 @@ static void create_detail(lv_obj_t* screen)
         lv_obj_set_pos(s_metric_cards[i], 0, i * 142);
         lv_obj_set_size(s_metric_cards[i], 224, 134);
         lv_obj_clear_flag(s_metric_cards[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(s_metric_cards[i], detail_gesture_cb,
-                            LV_EVENT_GESTURE, NULL);
 
         s_metric_names[i] = lv_label_create(s_metric_cards[i]);
         lv_obj_set_pos(s_metric_names[i], 0, 0);
@@ -695,8 +657,6 @@ static void create_detail(lv_obj_t* screen)
         s_metric_charts[i] = lv_chart_create(s_metric_cards[i]);
         lv_obj_set_pos(s_metric_charts[i], 0, 25);
         lv_obj_set_size(s_metric_charts[i], 208, 94);
-        lv_obj_add_event_cb(s_metric_charts[i], detail_gesture_cb,
-                            LV_EVENT_GESTURE, NULL);
         lv_chart_set_type(s_metric_charts[i], LV_CHART_TYPE_LINE);
         lv_chart_set_point_count(s_metric_charts[i],
                                  UI_SENSOR_HISTORY_CAPACITY);
@@ -833,4 +793,15 @@ void ui_screen_diag_update(const UiStatusState* state)
 uint8_t ui_screen_diag_selected_module(void)
 {
     return s_selected_module_id;
+}
+
+void ui_screen_diag_navigate_back(void)
+{
+    if (s_detail != NULL &&
+        !lv_obj_has_flag(s_detail, LV_OBJ_FLAG_HIDDEN)) {
+        close_detail();
+    } else if (s_device_list != NULL &&
+               !lv_obj_has_flag(s_device_list, LV_OBJ_FLAG_HIDDEN)) {
+        show_home();
+    }
 }
