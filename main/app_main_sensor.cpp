@@ -33,6 +33,7 @@
 
 #include "espnow_comm/comm.h"
 #include "espnow_comm/protocol.h"
+#include "hw_drivers/pump_control.h"
 
 #include "hw_drivers/drivers.h"
 #include "driver/ledc.h"
@@ -66,9 +67,9 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #define USE_SENSOR_BH1750    0   // BH1750 light sensor
 #define USE_SENSOR_JW01      0   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
 
-#define USE_BUZZER           1   // Passive buzzer (PWM melody playback)
-#define USE_SERVO            0   // Hobby servo (50 Hz PWM position control)
-#define USE_PUMP             0   // Water pump (GPIO MOSFET on/off control)
+#define USE_BUZZER           CONFIG_SENSOR_ACTUATOR_BUZZER
+#define USE_SERVO            CONFIG_SENSOR_ACTUATOR_SERVO
+#define USE_PUMP             CONFIG_SENSOR_ACTUATOR_PUMP
 
 // ====================================================================
 // Buzzer Configuration (passive buzzer via LEDC PWM)
@@ -184,13 +185,10 @@ static const uint16_t s_note_freqs[] = {
 // Pump Configuration (water pump via GPIO MOSFET switch, timed auto-off)
 // ====================================================================
 #if USE_PUMP
-#define PUMP_PIN                GPIO_NUM_5
-// PUMP_PIN output HIGH → MOSFET gate HIGH → pump ON
-// PUMP_PIN output LOW  → MOSFET gate LOW  → pump OFF
+#define PUMP_PIN                ((gpio_num_t)CONFIG_PUMP_GPIO)
 // CMD_PUMP_WRITE payload: 2-byte duration_ms (big-endian uint16)
 //   0          → turn off immediately
-//   1..65534   → turn on for N ms, then auto-off via FreeRTOS timer
-//   65535      → turn on indefinitely (cancel previous timer)
+//   1..CONFIG_PUMP_MAX_RUN_MS → turn on for N ms, then auto-off
 
 // CMD_PUMP_WRITE is shared in espnow_comm/protocol.h.
 #endif // USE_PUMP
@@ -206,9 +204,9 @@ static const char* SENSOR_CAPABILITY =
     "Use servo_write(id,angle) and servo_sweep(id,from,to,step,delay). "
 #endif
 #if USE_PUMP
-    "Pump module: GPIO5 MOSFET switch, 5V water pump. "
+    "Pump module: configurable GPIO MOSFET switch, 5V water pump. "
     "Use pump_write(id,duration_ms) where duration_ms=0(OFF), "
-    "1..65534(on for N ms), 65535(on indefinitely). "
+    "1..configured maximum(on for a finite duration). "
 #endif
 #if USE_BUZZER
     "Doorbell: GPIO4 passive buzzer. "
@@ -406,72 +404,86 @@ static void servo_write_angle(int angle)
 #include "freertos/timers.h"
 
 static TimerHandle_t s_pump_timer = NULL;
+static PumpControl s_pump_control = {};
+
+static bool pump_set_output(void* context, bool active)
+{
+    (void)context;
+    const int active_level = CONFIG_PUMP_ACTIVE_HIGH ? 1 : 0;
+    const int level = active ? active_level : !active_level;
+    return gpio_set_level(PUMP_PIN, level) == ESP_OK;
+}
+
+static bool pump_arm_timer(void* context, uint32_t delay_ticks)
+{
+    TimerHandle_t timer = (TimerHandle_t)context;
+    return timer != NULL &&
+           xTimerChangePeriod(timer, (TickType_t)delay_ticks, 0) == pdPASS;
+}
+
+static void pump_cancel_timer(void* context)
+{
+    TimerHandle_t timer = (TimerHandle_t)context;
+    if (timer != NULL) {
+        xTimerStop(timer, 0);
+    }
+}
 
 // ── Auto-off timer callback (runs in timer task context) ──
 static void pump_timer_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
-    gpio_set_level(PUMP_PIN, 0);
+    pump_control_timer_fired(&s_pump_control);
     ESP_LOGI("sensor", "PUMP_AUTO_OFF pin=GPIO%d", (int)PUMP_PIN);
 }
 
-static void pump_init(void)
+static bool pump_init(void)
 {
-    gpio_set_direction(PUMP_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(PUMP_PIN, 0);  // default OFF
+    if (gpio_set_direction(PUMP_PIN, GPIO_MODE_OUTPUT) != ESP_OK ||
+        !pump_set_output(NULL, false)) {
+        ESP_LOGE("sensor", "PUMP: failed to configure safe OFF output");
+        return false;
+    }
 
-    s_pump_timer = xTimerCreate("pump_to", pdMS_TO_TICKS(100),
+    s_pump_timer = xTimerCreate("pump_to", 1,
                                  pdFALSE,   // one-shot
                                  NULL,
                                  pump_timer_cb);
     if (s_pump_timer == NULL) {
         ESP_LOGE("sensor", "PUMP: failed to create auto-off timer");
+        pump_set_output(NULL, false);
+        return false;
     }
 
+    PumpControlBackend backend = {
+        s_pump_timer, pump_set_output, pump_arm_timer, pump_cancel_timer
+    };
+    if (!pump_control_init(&s_pump_control, &backend,
+                           portTICK_PERIOD_MS, CONFIG_PUMP_MAX_RUN_MS)) {
+        ESP_LOGE("sensor", "PUMP: failed to initialize fail-safe control");
+        pump_set_output(NULL, false);
+        return false;
+    }
     ESP_LOGI("sensor", "PUMP_INIT pin=GPIO%d state=OFF", (int)PUMP_PIN);
+    return true;
 }
 
 // duration_ms = 0          → turn off immediately
-// duration_ms = 1..65534   → turn on for N ms, auto-off via timer
-// duration_ms = 65535      → turn on indefinitely (cancel timer)
-static void pump_on_for(uint16_t duration_ms)
+// duration_ms = 1..CONFIG_PUMP_MAX_RUN_MS → finite timed run
+static bool pump_on_for(uint16_t duration_ms)
 {
-    if (duration_ms == 0) {
-        // Turn off immediately, cancel any pending auto-off timer
-        if (s_pump_timer && xTimerIsTimerActive(s_pump_timer)) {
-            xTimerStop(s_pump_timer, 0);
-        }
-        gpio_set_level(PUMP_PIN, 0);
-        ESP_LOGI("sensor", "PUMP_OFF pin=GPIO%d", (int)PUMP_PIN);
-        return;
+    if (!pump_control_apply(&s_pump_control, duration_ms)) {
+        ESP_LOGE("sensor", "PUMP_REJECT pin=GPIO%d dur=%ums",
+                 (int)PUMP_PIN, (int)duration_ms);
+        return false;
     }
-
-    // Turn on
-    gpio_set_level(PUMP_PIN, 1);
-
-    if (duration_ms == 65535) {
-        // Indefinite on — cancel any pending timer
-        if (s_pump_timer && xTimerIsTimerActive(s_pump_timer)) {
-            xTimerStop(s_pump_timer, 0);
-        }
-        ESP_LOGI("sensor", "PUMP_ON_INDEF pin=GPIO%d", (int)PUMP_PIN);
+    if (duration_ms == 0) {
+        ESP_LOGI("sensor", "PUMP_OFF pin=GPIO%d", (int)PUMP_PIN);
     } else {
-        // Timed on — restart/re-arm the one-shot auto-off timer
-        if (s_pump_timer == NULL) {
-            ESP_LOGW("sensor", "PUMP: no timer, manual off required");
-            ESP_LOGI("sensor", "PUMP_ON pin=GPIO%d dur=%ums (no timer!)",
-                     (int)PUMP_PIN, (int)duration_ms);
-            return;
-        }
-        // Stop previous timer if running, then restart with new period
-        if (xTimerIsTimerActive(s_pump_timer)) {
-            xTimerStop(s_pump_timer, 0);
-        }
-        xTimerChangePeriod(s_pump_timer, pdMS_TO_TICKS(duration_ms), 0);
-        xTimerStart(s_pump_timer, 0);
         ESP_LOGI("sensor", "PUMP_ON pin=GPIO%d dur=%ums",
                  (int)PUMP_PIN, (int)duration_ms);
     }
+    return true;
 }
 
 #endif // USE_PUMP
@@ -788,8 +800,9 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
     if (cmd_id == CMD_PUMP_WRITE) {
         if (payload_len >= 2) {
             uint16_t duration_ms = ((uint16_t)payload[0] << 8) | payload[1];
-            pump_on_for(duration_ms);
-            send_command_ack(src_mac, req_seq);
+            if (pump_on_for(duration_ms)) {
+                send_command_ack(src_mac, req_seq);
+            }
         } else {
             ESP_LOGW("sensor", "CMD_PUMP_WRITE short payload=%d (need 2 bytes)", payload_len);
         }
@@ -1026,9 +1039,12 @@ extern "C" void app_main(void)
 #endif
 
 #if USE_PUMP
-    pump_init();
-    printf("Pump initialized (GPIO%d, MOSFET switch, default OFF)\n",
-           (int)PUMP_PIN);
+    if (pump_init()) {
+        printf("Pump initialized (GPIO%d, timed fail-safe, default OFF)\n",
+               (int)PUMP_PIN);
+    } else {
+        printf("ERROR: Pump unavailable; output forced OFF\n");
+    }
 #endif
 
     // ---- Create command processing queue ----

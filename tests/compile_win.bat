@@ -19,6 +19,7 @@ set SRC=tests/main.cpp ^
   tests/touch_logic_test.cpp ^
   tests/ui_sensor_model_test.cpp ^
   tests/mic_level_test.cpp ^
+  tests/pump_control_test.cpp ^
   tests/script_normalizer_test.cpp ^
   tests/mocks/comm_stubs.cpp ^
   components/interpreter/src/lexer.cpp ^
@@ -33,6 +34,7 @@ set SRC=tests/main.cpp ^
   components/lcd_touch/src/touch_logic.cpp ^
   components/ui_lvgl/src/ui_sensor_model.cpp ^
   components/hw_drivers/src/mic_level.cpp ^
+  components/hw_drivers/src/pump_control.cpp ^
   components/web_console/src/script_normalizer.cpp
 
 echo Compiling ESP-LEGO unit tests...

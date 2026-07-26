@@ -4,6 +4,8 @@ REM Delegates to build_sensor.ps1.
 REM
 REM Usage:
 REM   scripts\build_sensor.bat              build only
+REM   scripts\build_sensor.bat -Profile pump
+REM   scripts\build_sensor.bat -Profile pump -Flash -Port COM5
 REM   scripts\build_sensor.bat flash        build + auto-detect COM + flash
 REM   scripts\build_sensor.bat monitor      build + flash + serial monitor
 REM   scripts\build_sensor.bat flash COM5   specify COM port manually

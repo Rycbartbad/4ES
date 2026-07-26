@@ -3,12 +3,53 @@
 #include "sdkconfig.h"
 #include "interpreter/environment.h"
 #include "interpreter/interpreter.h"
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define BIF_COUNT 28
+#define CONTROL_COMMAND_COUNT 7
+#define CONTROL_COMMAND_MAX_ARGS 5
+
+typedef enum {
+    CONTROL_ARG_DEVICE = 0,
+    CONTROL_ARG_NUMBER,
+} ControlArgKind;
+
+typedef struct {
+    const char* name;
+    ControlArgKind kind;
+    double min_value;
+    double max_value;
+    const char* description;
+} ControlArgSpec;
+
+typedef Value (*ControlCommandHandler)(Value* args, int arg_count,
+                                       ExecutionContext* ctx);
+
+typedef struct {
+    const char* dsl_name;
+    const char* device_type;
+    const char* description;
+    const ControlArgSpec* args;
+    uint8_t arg_count;
+    bool print_result;
+    ControlCommandHandler handler;
+} ControlCommandSpec;
+
+// Read-only catalog used by interpreter dispatch and Web Console AI tooling.
+const ControlCommandSpec* control_command_specs(size_t* out_count);
+const ControlCommandSpec* control_command_find(const char* dsl_name);
+
+// Format already-validated argument literals into one executable DSL
+// statement. Returns the number of bytes written, or -1 on invalid input.
+int control_command_format_dsl(const char* dsl_name,
+                               const char* const* arg_literals,
+                               size_t arg_count,
+                               char* out, size_t out_len);
 
 // Register all built-in functions into the given environment.
 void register_builtins(Environment* env);

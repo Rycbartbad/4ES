@@ -17,6 +17,7 @@ static const char* TAG = "hw_drivers";
 
 // INMP441 wiring per U2 (=J3) schematic: pin 4/7/8 = MIC_SD/SCK/WS.
 // Corresponding ESP32-S3 GPIOs: GPIO1 / GPIO41 / GPIO40.
+#if CONFIG_IDF_TARGET_ESP32S3
 #define MIC_I2S_SD_PIN  GPIO_NUM_1
 #define MIC_I2S_SCK_PIN GPIO_NUM_41
 #define MIC_I2S_WS_PIN  GPIO_NUM_40
@@ -28,6 +29,7 @@ static i2s_chan_handle_t s_mic_rx_chan = NULL;
 static bool s_mic_ready = false;
 static StaticSemaphore_t s_mic_mutex_storage;
 static SemaphoreHandle_t s_mic_mutex = NULL;
+#endif
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static bool s_adc1_ready = false;
 
@@ -134,6 +136,8 @@ void hw_pwm_write(uint8_t pin, int val)
     };
     ledc_channel_config(&ch);
 }
+
+#if CONFIG_IDF_TARGET_ESP32S3
 
 esp_err_t hw_mic_init(void)
 {
@@ -249,3 +253,26 @@ double hw_mic_level(void)
     (void)hw_mic_read_level(&percent);
     return percent;
 }
+
+#else
+
+esp_err_t hw_mic_init(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t hw_mic_read_level(double* out_percent)
+{
+    if (out_percent == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_percent = 0.0;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+double hw_mic_level(void)
+{
+    return 0.0;
+}
+
+#endif

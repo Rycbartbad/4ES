@@ -11,6 +11,7 @@
 #include "interpreter/environment.h"
 #include "interpreter/value.h"
 #include "espnow_comm/peer_mgr.h"
+#include "espnow_comm/protocol.h"
 #include <string.h>
 #include <string.h>
 #include <stdio.h>
@@ -24,6 +25,12 @@ static Environment     s_bif_env;
 // Defined in interpreter_test.cpp (shared across test binaries)
 extern volatile bool s_script_timeout;
 extern volatile bool s_script_abort_requested;
+extern int g_mock_send_cmd_calls;
+extern uint8_t g_mock_send_cmd_module_id;
+extern uint16_t g_mock_send_cmd_id;
+extern uint8_t g_mock_send_cmd_payload[16];
+extern uint8_t g_mock_send_cmd_payload_len;
+extern void mock_send_cmd_reset(void);
 
 // ================================================================
 // Helper: build a Value of a given type
@@ -245,6 +252,107 @@ static void test_bif_servo_sweep(void) {
     TEST_PASS();
 }
 
+static void test_control_command_catalog(void) {
+    TEST("Control command catalog exposes unique AI-callable commands");
+    size_t count = 0;
+    const ControlCommandSpec* specs = control_command_specs(&count);
+    TEST_ASSERT_NOT_NULL(specs);
+    TEST_ASSERT_EQUAL_INT(7, count);
+
+    const ControlCommandSpec* pump = NULL;
+    for (size_t i = 0; i < count; i++) {
+        TEST_ASSERT_NOT_NULL(specs[i].dsl_name);
+        TEST_ASSERT_NOT_NULL(specs[i].handler);
+        for (size_t j = i + 1; j < count; j++) {
+            TEST_ASSERT(strcmp(specs[i].dsl_name, specs[j].dsl_name) != 0);
+        }
+        if (strcmp(specs[i].dsl_name, "pump_write") == 0) {
+            pump = &specs[i];
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pump);
+    TEST_ASSERT_STR_EQUAL("pump", pump->device_type);
+    TEST_ASSERT_EQUAL_INT(2, pump->arg_count);
+    TEST_ASSERT_EQUAL_DOUBLE(30000.0, pump->args[1].max_value, 0.001);
+    TEST_PASS();
+}
+
+static void test_control_command_formats_dsl(void) {
+    TEST("Control command catalog formats tool arguments as executable DSL");
+    char out[128] = {};
+    const char* pump_args[] = {"7", "5000"};
+    int len = control_command_format_dsl(
+        "pump_write", pump_args, 2, out, sizeof(out));
+    TEST_ASSERT(len > 0);
+    TEST_ASSERT_STR_EQUAL("pump_write(7,5000);\n", out);
+
+    const char* sensor_args[] = {"\"temperature\""};
+    len = control_command_format_dsl(
+        "read_sensor", sensor_args, 1, out, sizeof(out));
+    TEST_ASSERT(len > 0);
+    TEST_ASSERT_STR_EQUAL("print(read_sensor(\"temperature\"));\n", out);
+
+    len = control_command_format_dsl(
+        "pump_write", pump_args, 1, out, sizeof(out));
+    TEST_ASSERT_EQUAL_INT(-1, len);
+    TEST_PASS();
+}
+
+static void test_bif_pump_write_payload_and_limits(void) {
+    TEST("Builtin: pump_write sends finite big-endian duration");
+    mock_send_cmd_reset();
+    Value args[] = { v_num(7), v_num(5000) };
+    Value r = call_bif("pump_write", args, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_calls);
+    TEST_ASSERT_EQUAL_INT(7, g_mock_send_cmd_module_id);
+    TEST_ASSERT_EQUAL_INT(CMD_PUMP_WRITE, g_mock_send_cmd_id);
+    TEST_ASSERT_EQUAL_INT(2, g_mock_send_cmd_payload_len);
+    TEST_ASSERT_EQUAL_INT(0x13, g_mock_send_cmd_payload[0]);
+    TEST_ASSERT_EQUAL_INT(0x88, g_mock_send_cmd_payload[1]);
+
+    mock_send_cmd_reset();
+    Value off[] = { v_num(7), v_num(0) };
+    r = call_bif("pump_write", off, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_calls);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_payload[0]);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_payload[1]);
+
+    mock_send_cmd_reset();
+    Value one_ms[] = { v_num(7), v_num(1) };
+    r = call_bif("pump_write", one_ms, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_calls);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_payload[0]);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_payload[1]);
+
+    mock_send_cmd_reset();
+    Value max_duration[] = { v_num(7), v_num(30000) };
+    r = call_bif("pump_write", max_duration, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_calls);
+    TEST_ASSERT_EQUAL_INT(0x75, g_mock_send_cmd_payload[0]);
+    TEST_ASSERT_EQUAL_INT(0x30, g_mock_send_cmd_payload[1]);
+
+    mock_send_cmd_reset();
+    Value too_long[] = { v_num(7), v_num(30001) };
+    r = call_bif("pump_write", too_long, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value negative[] = { v_num(7), v_num(-1) };
+    r = call_bif("pump_write", negative, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value wrong_type[] = { v_num(7), v_str("5000") };
+    r = call_bif("pump_write", wrong_type, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+    TEST_PASS();
+}
+
 static void test_bif_arg_validation(void) {
     TEST("Builtin: argument validation (missing required args)");
     // espnow_send with 0 args should return -1
@@ -287,13 +395,16 @@ void test_builtins(void) {
     test_bif_peer_count();
     test_bif_remote_read();
     test_bif_espnow_send();
-    test_bif_read_sensor_alias();
+    test_bif_read_sensor();
     test_bif_send_motor_alias();
     test_bif_buzzer_note();
     test_bif_buzzer_beep();
     test_bif_buzzer_song();
     test_bif_servo_write();
     test_bif_servo_sweep();
+    test_control_command_catalog();
+    test_control_command_formats_dsl();
+    test_bif_pump_write_payload_and_limits();
     test_bif_arg_validation();
     test_bif_list_get_oob();
 }

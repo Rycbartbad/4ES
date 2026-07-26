@@ -23,6 +23,9 @@ typedef int esp_now_send_status_t;
 #define ESP_NOW_SEND_SUCCESS    0
 #define ESP_NOW_SEND_FAIL       1
 #define ESP_NOW_ETH_ALEN        6
+#ifndef WIFI_IF_STA
+#define WIFI_IF_STA             0
+#endif
 
 // Stub functions
 static inline esp_err_t esp_now_init(void) { return ESP_OK; }

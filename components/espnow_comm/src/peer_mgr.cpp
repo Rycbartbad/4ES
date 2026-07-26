@@ -575,95 +575,108 @@ static bool str_icontains(const char* hay, const char* needle)
     return false;
 }
 
+static const char* const kServoAliases[] = {"servo", "舵机", "伺服"};
+static const char* const kServoTokens[] = {"servo"};
+static const char* const kBuzzerAliases[] = {
+    "buzzer", "doorbell", "beeper", "蜂鸣器", "门铃", "喇叭"
+};
+static const char* const kBuzzerTokens[] = {"buzzer", "doorbell", "beep"};
+static const char* const kPumpAliases[] = {"pump", "水泵", "抽水", "泵"};
+static const char* const kPumpTokens[] = {"pump"};
+static const char* const kSensorAliases[] = {"传感器", "sensor"};
+static const char* const kSensorTokens[] = {"sensor", "remote_read", "adc"};
+static const char* const kTemperatureAliases[] = {"温度", "temperature", "temp"};
+static const char* const kTemperatureTokens[] = {"temp"};
+static const char* const kHumidityAliases[] = {"湿度", "humidity", "humid"};
+static const char* const kHumidityTokens[] = {"humid"};
+static const char* const kLightAliases[] = {"光照", "亮度", "light", "lux"};
+static const char* const kLightTokens[] = {"light", "lux", "bh1750"};
+static const char* const kGasAliases[] = {"气体", "空气", "gas", "co2"};
+static const char* const kGasTokens[] = {
+    "co2", "tvoc", "ch2o", "gas", "air", "jw01"
+};
+static const char* const kRainAliases[] = {"雨", "rain"};
+static const char* const kRainTokens[] = {"rain"};
+static const char* const kVibrationAliases[] = {"振动", "vibration"};
+static const char* const kVibrationTokens[] = {"vibrat"};
+
+#define DEVICE_TYPE_ROW(type_name, alias_array, token_array) \
+    { type_name, alias_array, sizeof(alias_array) / sizeof(alias_array[0]), \
+      token_array, sizeof(token_array) / sizeof(token_array[0]) }
+
+// Tag order intentionally keeps broad actuator/sensor types before sensor
+// sub-types. Query resolution handles the broad "sensor" row last so
+// "温度传感器" resolves to temperature rather than sensor.
+static const DeviceTypeSpec kDeviceTypeSpecs[] = {
+    DEVICE_TYPE_ROW("servo",       kServoAliases,       kServoTokens),
+    DEVICE_TYPE_ROW("buzzer",      kBuzzerAliases,      kBuzzerTokens),
+    DEVICE_TYPE_ROW("pump",        kPumpAliases,        kPumpTokens),
+    DEVICE_TYPE_ROW("sensor",      kSensorAliases,      kSensorTokens),
+    DEVICE_TYPE_ROW("temperature", kTemperatureAliases, kTemperatureTokens),
+    DEVICE_TYPE_ROW("humidity",    kHumidityAliases,    kHumidityTokens),
+    DEVICE_TYPE_ROW("light",       kLightAliases,       kLightTokens),
+    DEVICE_TYPE_ROW("gas",         kGasAliases,         kGasTokens),
+    DEVICE_TYPE_ROW("rain",        kRainAliases,        kRainTokens),
+    DEVICE_TYPE_ROW("vibration",   kVibrationAliases,   kVibrationTokens),
+};
+
+#undef DEVICE_TYPE_ROW
+
+const DeviceTypeSpec* peer_mgr_device_type_specs(size_t* out_count)
+{
+    if (out_count != NULL) {
+        *out_count = sizeof(kDeviceTypeSpecs) / sizeof(kDeviceTypeSpecs[0]);
+    }
+    return kDeviceTypeSpecs;
+}
+
+static const DeviceTypeSpec* find_device_type_spec(const char* type)
+{
+    if (type == NULL) return NULL;
+    size_t count = 0;
+    const DeviceTypeSpec* specs = peer_mgr_device_type_specs(&count);
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(specs[i].canonical, type) == 0) {
+            return &specs[i];
+        }
+    }
+    return NULL;
+}
+
 bool peer_mgr_matches_type(const PeerEntry* entry, const char* type)
 {
     if (!entry || !type) return false;
 
-    // Search both the human name and the capability descriptor.
-    #define PEER_HAS(s) (str_icontains(entry->name, (s)) || \
-                         str_icontains(entry->capability, (s)))
-
-    // Actuators
-    if (strcmp(type, "servo") == 0) {
-        return PEER_HAS("servo");
+    const DeviceTypeSpec* spec = find_device_type_spec(type);
+    if (spec == NULL) return false;
+    for (size_t i = 0; i < spec->match_token_count; i++) {
+        const char* token = spec->match_tokens[i];
+        if (str_icontains(entry->name, token) ||
+            str_icontains(entry->capability, token)) {
+            return true;
+        }
     }
-    if (strcmp(type, "buzzer") == 0) {
-        return PEER_HAS("buzzer") || PEER_HAS("doorbell") || PEER_HAS("beep");
-    }
-    if (strcmp(type, "pump") == 0) {
-        return PEER_HAS("pump");
-    }
-
-    // Sensor sub-types (specific) — let the model/interpreter pick the right
-    // sensor when several are online (e.g. "温度" vs "光照").
-    if (strcmp(type, "temperature") == 0) {
-        return PEER_HAS("temp");
-    }
-    if (strcmp(type, "humidity") == 0) {
-        return PEER_HAS("humid");
-    }
-    if (strcmp(type, "light") == 0) {
-        return PEER_HAS("light") || PEER_HAS("lux") || PEER_HAS("bh1750");
-    }
-    if (strcmp(type, "gas") == 0) {
-        return PEER_HAS("co2") || PEER_HAS("tvoc") || PEER_HAS("ch2o") ||
-               PEER_HAS("gas") || PEER_HAS("air")  || PEER_HAS("jw01");
-    }
-    if (strcmp(type, "rain") == 0) {
-        return PEER_HAS("rain");
-    }
-    if (strcmp(type, "vibration") == 0) {
-        return PEER_HAS("vibrat");
-    }
-
-    // Generic sensor (broad — matches any readable module)
-    if (strcmp(type, "sensor") == 0) {
-        return PEER_HAS("sensor") || PEER_HAS("remote_read") || PEER_HAS("adc");
-    }
-
-    #undef PEER_HAS
     return false;
 }
-
-// -------------------------------------------------------------------------
-// Reference-word -> canonical-type synonym table.
-//
-// This is the ONE place to extend spoken / dialect / multilingual synonyms:
-// just add a { "word", "type" } row.  Matching is case-insensitive substring,
-// so "温度传感器现在多少" already contains "温度".
-//
-// ORDER MATTERS: more specific words (sensor sub-types) must appear BEFORE
-// the generic "sensor" / "传感器" row, so "温度传感器" resolves to
-// temperature rather than the generic sensor bucket.
-// -------------------------------------------------------------------------
-typedef struct {
-    const char* word;   // reference word (English or Chinese)
-    const char* type;   // canonical type tag
-} SynonymEntry;
-
-static const SynonymEntry kSynonyms[] = {
-    // actuators
-    { "servo", "servo" }, { "舵机", "servo" }, { "伺服", "servo" },
-    { "buzzer", "buzzer" }, { "doorbell", "buzzer" }, { "beeper", "buzzer" },
-    { "蜂鸣器", "buzzer" }, { "门铃", "buzzer" }, { "喇叭", "buzzer" },
-    { "pump", "pump" }, { "水泵", "pump" }, { "抽水", "pump" }, { "泵", "pump" },
-    // sensor sub-types (specific — keep before the generic sensor rows)
-    { "温度", "temperature" }, { "temperature", "temperature" }, { "temp", "temperature" },
-    { "湿度", "humidity" }, { "humidity", "humidity" }, { "humid", "humidity" },
-    { "光照", "light" }, { "亮度", "light" }, { "light", "light" }, { "lux", "light" },
-    { "气体", "gas" }, { "空气", "gas" }, { "gas", "gas" }, { "co2", "gas" },
-    { "雨", "rain" }, { "rain", "rain" },
-    { "振动", "vibration" }, { "vibration", "vibration" },
-    // generic sensor (keep last so specific types win)
-    { "传感器", "sensor" }, { "sensor", "sensor" },
-};
 
 const char* peer_mgr_type_from_query(const char* query)
 {
     if (!query) return NULL;
-    for (size_t i = 0; i < sizeof(kSynonyms) / sizeof(kSynonyms[0]); i++) {
-        if (str_icontains(query, kSynonyms[i].word)) {
-            return kSynonyms[i].type;
+    size_t count = 0;
+    const DeviceTypeSpec* specs = peer_mgr_device_type_specs(&count);
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            const bool generic_sensor =
+                strcmp(specs[i].canonical, "sensor") == 0;
+            if ((pass == 0 && generic_sensor) ||
+                (pass == 1 && !generic_sensor)) {
+                continue;
+            }
+            for (size_t j = 0; j < specs[i].alias_count; j++) {
+                if (str_icontains(query, specs[i].aliases[j])) {
+                    return specs[i].canonical;
+                }
+            }
         }
     }
     return NULL;
@@ -677,15 +690,13 @@ void peer_mgr_type_tags(const PeerEntry* entry, char* out, size_t out_len)
 
     // Broad type(s) first, then any specific sensor sub-types the device
     // supports, so the model can match "温度" to a multi-sensor module.
-    static const char* kTags[] = {
-        "servo", "buzzer", "pump", "sensor",
-        "temperature", "humidity", "light", "gas", "rain", "vibration"
-    };
+    size_t count = 0;
+    const DeviceTypeSpec* specs = peer_mgr_device_type_specs(&count);
     size_t pos = 0;
-    for (size_t i = 0; i < sizeof(kTags) / sizeof(kTags[0]); i++) {
-        if (!peer_mgr_matches_type(entry, kTags[i])) continue;
+    for (size_t i = 0; i < count; i++) {
+        if (!peer_mgr_matches_type(entry, specs[i].canonical)) continue;
         int w = snprintf(out + pos, out_len - pos, "%s%s",
-                         pos ? "," : "", kTags[i]);
+                         pos ? "," : "", specs[i].canonical);
         if (w < 0) break;
         pos += (size_t)w;
         if (pos >= out_len) { out[out_len - 1] = '\0'; break; }

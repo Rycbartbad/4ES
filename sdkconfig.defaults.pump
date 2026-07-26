@@ -1,0 +1,11 @@
+# ESP-LEGO timed pump submodule profile.
+# Combine with sdkconfig.defaults and sdkconfig.defaults.sensor.
+CONFIG_DEVICE_ROLE_SENSOR=y
+# CONFIG_DEVICE_ROLE_MASTER is not set
+CONFIG_IDF_TARGET="esp32c3"
+# CONFIG_WEB_CONSOLE_ENABLED is not set
+CONFIG_SENSOR_MODULE_NAME="pump"
+CONFIG_SENSOR_ACTUATOR_PUMP=y
+CONFIG_PUMP_GPIO=5
+CONFIG_PUMP_ACTIVE_HIGH=y
+CONFIG_PUMP_MAX_RUN_MS=30000

@@ -96,12 +96,10 @@ static inline Value bval_str(const char* s)
 // Builtin function type and registration table
 // ====================================================================
 
-typedef Value (*BuiltinFunc)(Value* args, int arg_count, ExecutionContext* ctx);
-
 typedef struct {
     const char* name;
     int         param_count;
-    BuiltinFunc func;
+    ControlCommandHandler func;
 } BuiltinEntry;
 
 // ---- Forward declarations of all builtin implementations -------------
@@ -157,16 +155,127 @@ static const BuiltinEntry s_builtin_entries[] = {
     {"remote_read_max",  1, bif_remote_read_max},
     {"remote_read_min",  1, bif_remote_read_min},
     {"list_free",        1, bif_list_free_builtin},
-    {"read_sensor",      1, bif_read_sensor},
     {"send_motor",       2, bif_send_motor},
     {"mic_level",        0, bif_mic_level},
-    {"buzzer_beep",      2, bif_buzzer_beep},
-    {"buzzer_note",      3, bif_buzzer_note},
-    {"buzzer_song",      2, bif_buzzer_song},
-    {"servo_write",      2, bif_servo_write},
-    {"servo_sweep",      5, bif_servo_sweep},
-    {"pump_write",       2, bif_pump_write},
 };
+
+static const ControlArgSpec kReadSensorArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "sensor id, exact name, or type word"},
+};
+static const ControlArgSpec kBuzzerBeepArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "buzzer id, exact name, or type word"},
+    {"count", CONTROL_ARG_NUMBER, 1, 20, "number of beeps"},
+};
+static const ControlArgSpec kBuzzerNoteArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "buzzer id, exact name, or type word"},
+    {"note", CONTROL_ARG_NUMBER, 0, 36, "note number"},
+    {"dur", CONTROL_ARG_NUMBER, 1, 30000, "duration in milliseconds"},
+};
+static const ControlArgSpec kBuzzerSongArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "buzzer id, exact name, or type word"},
+    {"song", CONTROL_ARG_NUMBER, 0, 2, "preset song number"},
+};
+static const ControlArgSpec kServoWriteArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "servo id, exact name, or type word"},
+    {"angle", CONTROL_ARG_NUMBER, 0, 180, "angle in degrees"},
+};
+static const ControlArgSpec kServoSweepArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "servo id, exact name, or type word"},
+    {"from", CONTROL_ARG_NUMBER, 0, 180, "starting angle"},
+    {"to", CONTROL_ARG_NUMBER, 0, 180, "ending angle"},
+    {"step", CONTROL_ARG_NUMBER, 1, 180, "angle step"},
+    {"delay", CONTROL_ARG_NUMBER, 1, 30000,
+     "delay between steps in milliseconds"},
+};
+static const ControlArgSpec kPumpWriteArgs[] = {
+    {"device", CONTROL_ARG_DEVICE, 0, 0,
+     "pump id, exact name, or type word"},
+    {"duration_ms", CONTROL_ARG_NUMBER, 0, 30000,
+     "0 turns off; 1..30000 runs for a finite duration"},
+};
+
+static const ControlCommandSpec s_control_commands[] = {
+    {"read_sensor", "sensor", "Read and print a cached sensor value.",
+     kReadSensorArgs, 1, true, bif_read_sensor},
+    {"buzzer_beep", "buzzer", "Beep a buzzer a finite number of times.",
+     kBuzzerBeepArgs, 2, false, bif_buzzer_beep},
+    {"buzzer_note", "buzzer", "Play one buzzer note for a finite duration.",
+     kBuzzerNoteArgs, 3, false, bif_buzzer_note},
+    {"buzzer_song", "buzzer", "Play a preset finite buzzer song.",
+     kBuzzerSongArgs, 2, false, bif_buzzer_song},
+    {"servo_write", "servo", "Set a servo angle from 0 to 180 degrees.",
+     kServoWriteArgs, 2, false, bif_servo_write},
+    {"servo_sweep", "servo", "Sweep a servo through a finite angle range.",
+     kServoSweepArgs, 5, false, bif_servo_sweep},
+    {"pump_write", "pump",
+     "Turn a pump off or run it for at most 30000 milliseconds.",
+     kPumpWriteArgs, 2, false, bif_pump_write},
+};
+
+static_assert(sizeof(s_builtin_entries) / sizeof(s_builtin_entries[0]) == 21,
+              "BIF_COUNT base builtin count mismatch");
+static_assert(sizeof(s_control_commands) / sizeof(s_control_commands[0]) ==
+                  CONTROL_COMMAND_COUNT,
+              "CONTROL_COMMAND_COUNT mismatch");
+static_assert(21 + CONTROL_COMMAND_COUNT == BIF_COUNT,
+              "BIF_COUNT must include control commands");
+
+const ControlCommandSpec* control_command_specs(size_t* out_count)
+{
+    if (out_count != NULL) {
+        *out_count = sizeof(s_control_commands) /
+                     sizeof(s_control_commands[0]);
+    }
+    return s_control_commands;
+}
+
+const ControlCommandSpec* control_command_find(const char* dsl_name)
+{
+    if (dsl_name == NULL) return NULL;
+    for (size_t i = 0;
+         i < sizeof(s_control_commands) / sizeof(s_control_commands[0]); i++) {
+        if (strcmp(s_control_commands[i].dsl_name, dsl_name) == 0) {
+            return &s_control_commands[i];
+        }
+    }
+    return NULL;
+}
+
+int control_command_format_dsl(const char* dsl_name,
+                               const char* const* arg_literals,
+                               size_t arg_count,
+                               char* out, size_t out_len)
+{
+    const ControlCommandSpec* spec = control_command_find(dsl_name);
+    if (spec == NULL || arg_literals == NULL || out == NULL || out_len == 0 ||
+        arg_count != spec->arg_count) {
+        return -1;
+    }
+
+    size_t pos = 0;
+    int w = snprintf(out, out_len, "%s%s(", spec->print_result ? "print(" : "",
+                     spec->dsl_name);
+    if (w < 0 || (size_t)w >= out_len) return -1;
+    pos = (size_t)w;
+    for (size_t i = 0; i < arg_count; i++) {
+        if (arg_literals[i] == NULL) return -1;
+        w = snprintf(out + pos, out_len - pos, "%s%s",
+                     i ? "," : "", arg_literals[i]);
+        if (w < 0 || (size_t)w >= out_len - pos) return -1;
+        pos += (size_t)w;
+    }
+    w = snprintf(out + pos, out_len - pos,
+                 spec->print_result ? "));\n" : ");\n");
+    if (w < 0 || (size_t)w >= out_len - pos) return -1;
+    pos += (size_t)w;
+    return (int)pos;
+}
 
 // ---- Persistent FuncObj array for builtins (body = NULL = builtin) ---
 
@@ -188,10 +297,13 @@ void register_builtins(Environment* env)
     if (s_builtins_registered) return;
     s_builtins_registered = true;
 
-    for (int i = 0; i < BIF_COUNT; i++) {
-        FuncObj* fo = &s_builtin_funcs[i];
-        fo->name        = intern_string(s_builtin_entries[i].name,
-                                        (int)strlen(s_builtin_entries[i].name));
+    int index = 0;
+    for (size_t i = 0;
+         i < sizeof(s_builtin_entries) / sizeof(s_builtin_entries[0]);
+         i++, index++) {
+        FuncObj* fo = &s_builtin_funcs[index];
+        fo->name = intern_string(s_builtin_entries[i].name,
+                                 (int)strlen(s_builtin_entries[i].name));
         fo->param_count = s_builtin_entries[i].param_count;
         fo->body        = NULL;             // signals builtin to interpreter
 
@@ -204,6 +316,20 @@ void register_builtins(Environment* env)
         // caller (call_function) must fall through to call_builtin_by_name
         // strcmp dispatch rather than relying on pointer match.
         // This is intentional — see design.md §6.9.1 for reasoning.
+    }
+    for (size_t i = 0;
+         i < sizeof(s_control_commands) / sizeof(s_control_commands[0]);
+         i++, index++) {
+        FuncObj* fo = &s_builtin_funcs[index];
+        fo->name = intern_string(s_control_commands[i].dsl_name,
+                                 (int)strlen(s_control_commands[i].dsl_name));
+        fo->param_count = s_control_commands[i].arg_count;
+        fo->body = NULL;
+
+        Value v;
+        v.type = VAL_FUNC;
+        v.func = fo;
+        env_define(env, s_control_commands[i].dsl_name, v);
     }
 
     // Register print callback capture (web_console integration)
@@ -334,35 +460,18 @@ Value call_builtin_by_name(const char* name, const Value* args,
         local_args[i] = args[i];
     }
 
-    // Dispatch by name using strcmp chain
-    if (strcmp(name, "digital_read")    == 0) return bif_digital_read(local_args, n, ctx);
-    if (strcmp(name, "digital_write")   == 0) return bif_digital_write(local_args, n, ctx);
-    if (strcmp(name, "analog_read")     == 0) return bif_analog_read(local_args, n, ctx);
-    if (strcmp(name, "analog_write")    == 0) return bif_analog_write(local_args, n, ctx);
-    if (strcmp(name, "sleep")           == 0) return bif_sleep(local_args, n, ctx);
-    if (strcmp(name, "print")           == 0) return bif_print(local_args, n, ctx);
-    if (strcmp(name, "list_peers")      == 0) return bif_list_peers(local_args, n, ctx);
-    if (strcmp(name, "peer_count")      == 0) return bif_peer_count(local_args, n, ctx);
-    if (strcmp(name, "peer_online")     == 0) return bif_peer_online(local_args, n, ctx);
-    if (strcmp(name, "remote_read")     == 0) return bif_remote_read(local_args, n, ctx);
-    if (strcmp(name, "espnow_send")     == 0) return bif_espnow_send(local_args, n, ctx);
-    if (strcmp(name, "list_new")        == 0) return bif_list_new(local_args, n, ctx);
-    if (strcmp(name, "list_get")        == 0) return bif_list_get(local_args, n, ctx);
-    if (strcmp(name, "list_set")        == 0) return bif_list_set(local_args, n, ctx);
-    if (strcmp(name, "list_len")        == 0) return bif_list_len(local_args, n, ctx);
-    if (strcmp(name, "remote_read_avg") == 0) return bif_remote_read_avg(local_args, n, ctx);
-    if (strcmp(name, "remote_read_max") == 0) return bif_remote_read_max(local_args, n, ctx);
-    if (strcmp(name, "remote_read_min") == 0) return bif_remote_read_min(local_args, n, ctx);
-    if (strcmp(name, "list_free")       == 0) return bif_list_free_builtin(local_args, n, ctx);
-    if (strcmp(name, "read_sensor")     == 0) return bif_read_sensor(local_args, n, ctx);
-    if (strcmp(name, "send_motor")      == 0) return bif_send_motor(local_args, n, ctx);
-    if (strcmp(name, "mic_level")       == 0) return bif_mic_level(local_args, n, ctx);
-    if (strcmp(name, "buzzer_beep")     == 0) return bif_buzzer_beep(local_args, n, ctx);
-    if (strcmp(name, "buzzer_note")     == 0) return bif_buzzer_note(local_args, n, ctx);
-    if (strcmp(name, "buzzer_song")     == 0) return bif_buzzer_song(local_args, n, ctx);
-    if (strcmp(name, "servo_write")     == 0) return bif_servo_write(local_args, n, ctx);
-    if (strcmp(name, "servo_sweep")     == 0) return bif_servo_sweep(local_args, n, ctx);
-    if (strcmp(name, "pump_write")      == 0) return bif_pump_write(local_args, n, ctx);
+    for (size_t i = 0;
+         i < sizeof(s_builtin_entries) / sizeof(s_builtin_entries[0]); i++) {
+        if (strcmp(name, s_builtin_entries[i].name) == 0) {
+            return s_builtin_entries[i].func(local_args, n, ctx);
+        }
+    }
+    for (size_t i = 0;
+         i < sizeof(s_control_commands) / sizeof(s_control_commands[0]); i++) {
+        if (strcmp(name, s_control_commands[i].dsl_name) == 0) {
+            return s_control_commands[i].handler(local_args, n, ctx);
+        }
+    }
 
     // Not found — signal constraint violation
     ctx->constraint_violated = true;
@@ -1160,8 +1269,7 @@ static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx)
 // ====================================================================
 // 28. pump_write(id, duration_ms) — remote water pump timed control
 //     duration_ms = 0           → turn off immediately
-//     duration_ms = 1..65534    → turn on for N ms, sensor auto-off
-//     duration_ms = 65535       → turn on indefinitely
+//     duration_ms = 1..30000    → turn on for N ms, sensor auto-off
 // ====================================================================
 
 static Value bif_pump_write(Value* args, int n, ExecutionContext* ctx)
@@ -1175,9 +1283,12 @@ static Value bif_pump_write(Value* args, int n, ExecutionContext* ctx)
         return bval_num(-1);
     }
 
+    if (!isfinite(args[1].num) || args[1].num < 0 ||
+        args[1].num > 30000) {
+        ESP_LOGW(TAG, "pump_write duration must be 0..30000 ms");
+        return bval_num(-1);
+    }
     int dur = (int)args[1].num;
-    if (dur < 0) dur = 0;
-    if (dur > 65535) dur = 65535;
 
     uint16_t duration_ms = (uint16_t)dur;
     uint8_t payload[2] = { (uint8_t)(duration_ms >> 8),

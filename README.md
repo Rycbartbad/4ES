@@ -84,6 +84,8 @@ Write-Host "Using $ESPPORT"
 ```powershell
 .\scripts\build_sensor.ps1 -Flash -Port COM5
 .\scripts\build_sensor.ps1 -Monitor -Port COM5
+# Timed pump profile (the default remains the existing buzzer profile):
+.\scripts\build_sensor.ps1 -Profile pump -Flash -Port COM5
 ```
 
 不同从机不是只换设备名；编译前还要选择对应硬件宏。Doorbell 的完整配置、烧录和验证步骤见 [docs/slave_firmware_guide.md](docs/slave_firmware_guide.md)。板载触摸界面的详细预期效果见 [docs/lvgl_requirements.md](docs/lvgl_requirements.md)。

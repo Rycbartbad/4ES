@@ -126,12 +126,13 @@ static void test_env_bindings_full(void) {
 
     Environment env;
     env_init(&env, NULL);
+    char names[CONFIG_MAX_BINDINGS][16];
 
-    // Fill to capacity
+    // Environment bindings retain identifier pointers, so each test name must
+    // have stable storage just like interned identifiers in the interpreter.
     for (int i = 0; i < CONFIG_MAX_BINDINGS; i++) {
-        char name[16];
-        snprintf(name, sizeof(name), "v%d", i);
-        int ret = env_define(&env, name, num_val(i));
+        snprintf(names[i], sizeof(names[i]), "v%d", i);
+        int ret = env_define(&env, names[i], num_val(i));
         TEST_ASSERT_EQUAL_INT(i, ret);
     }
 

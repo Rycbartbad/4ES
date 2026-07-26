@@ -25,4 +25,43 @@ config SENSOR_MODULE_NAME
         Master uses this to present module info in list_peers().
         Example: "kitchen_temp", "living_light", "garden_moisture"
 
+choice SENSOR_ACTUATOR_PROFILE
+    prompt "Actuator profile"
+    default SENSOR_ACTUATOR_BUZZER
+    depends on DEVICE_ROLE_SENSOR
+    help
+        Select at most one actuator driver for this submodule build.
+        Sensor acquisition profiles remain unchanged.
+
+config SENSOR_ACTUATOR_NONE
+    bool "No actuator"
+
+config SENSOR_ACTUATOR_BUZZER
+    bool "Passive buzzer"
+
+config SENSOR_ACTUATOR_SERVO
+    bool "Hobby servo"
+
+config SENSOR_ACTUATOR_PUMP
+    bool "Timed water pump"
+
+endchoice
+
+config PUMP_GPIO
+    int "Pump control GPIO"
+    default 5
+    range 0 48
+    depends on SENSOR_ACTUATOR_PUMP
+
+config PUMP_ACTIVE_HIGH
+    bool "Pump output is active-high"
+    default y
+    depends on SENSOR_ACTUATOR_PUMP
+
+config PUMP_MAX_RUN_MS
+    int "Maximum pump run time per command (ms)"
+    default 30000
+    range 1 30000
+    depends on SENSOR_ACTUATOR_PUMP
+
 endmenu

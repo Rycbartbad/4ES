@@ -134,6 +134,35 @@ static void test_peer_is_duplicate(void) {
     TEST_PASS();
 }
 
+static void test_device_type_catalog_drives_resolution(void) {
+    TEST("Device type catalog exposes unique types and resolves pump aliases");
+
+    size_t count = 0;
+    const DeviceTypeSpec* specs = peer_mgr_device_type_specs(&count);
+    TEST_ASSERT_NOT_NULL(specs);
+    TEST_ASSERT(count >= 10);
+
+    const DeviceTypeSpec* pump = NULL;
+    for (size_t i = 0; i < count; i++) {
+        TEST_ASSERT_NOT_NULL(specs[i].canonical);
+        for (size_t j = i + 1; j < count; j++) {
+            TEST_ASSERT(strcmp(specs[i].canonical, specs[j].canonical) != 0);
+        }
+        if (strcmp(specs[i].canonical, "pump") == 0) {
+            pump = &specs[i];
+        }
+    }
+
+    TEST_ASSERT_NOT_NULL(pump);
+    TEST_ASSERT_STR_EQUAL("pump", peer_mgr_type_from_query("请打开水泵"));
+
+    PeerEntry entry = {};
+    strcpy(entry.name, "garden_pump");
+    strcpy(entry.capability, "Pump module: timed water pump control.");
+    TEST_ASSERT(peer_mgr_matches_type(&entry, pump->canonical));
+    TEST_PASS();
+}
+
 void test_peer_mgr(void) {
     printf("\n[Peer Manager Tests]\n");
     test_peer_insert_find();
@@ -142,4 +171,5 @@ void test_peer_mgr(void) {
     test_peer_full_table();
     test_peer_find_by_name();
     test_peer_is_duplicate();
+    test_device_type_catalog_drives_resolution();
 }

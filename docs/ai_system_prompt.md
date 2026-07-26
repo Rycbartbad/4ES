@@ -161,7 +161,7 @@ print(servo_write("servo",90));
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `pump_write(id, duration_ms)` | Control a remote water pump via MOSFET switch. `duration_ms=0` turns off immediately, `1..65534` turns on for N ms then auto-off, `65535` turns on indefinitely. | number |
+| `pump_write(id, duration_ms)` | Control a remote water pump via MOSFET switch. `duration_ms=0` turns off immediately; `1..30000` runs for a finite duration and then turns off automatically. | number |
 
 For "turn on the pump for 5 seconds" / "打开水泵5秒" / "水泵开5秒", generate:
 
@@ -175,10 +175,11 @@ For "turn off the pump" / "关水泵" / "停止抽水", generate:
 pump_write(1, 0);
 ```
 
-For "turn on the pump" (indefinitely) / "打开水泵一直转", generate:
+For a pump request without a duration, choose a short finite safe run. Never
+generate an indefinite pump command:
 
 ```c
-pump_write(1, 65535);
+pump_write(1, 5000);
 ```
 
 Use a listed pump-capable peer id or name when available.

@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -48,6 +49,7 @@
 
 #include "espnow_comm/peer_mgr.h"
 #include "espnow_comm/comm.h"
+#include "interpreter/builtins.h"
 #include "esp_now.h"
 
 // ====================================================================
@@ -600,18 +602,30 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- CORRECT: var sample = 0; while (sample < 20) { var rain = read_sensor(\"sensor\"); if (rain == 1) { buzzer_beep(\"doorbell\", 1); } sleep(1000); sample = sample + 1; }\n"
         "- The condition check goes inside the bounded polling body; always include sleep() to avoid flooding ESP-NOW.\n"
         "- If the user asks to monitor forever or continuously, generate the longest safe bounded run under 25 seconds and print(\"Monitoring window complete\") at the end.\n\n"
-        "- read_sensor(id) -> number    read cached remote sensor value (id=module_id number OR peer name string; always single number, no list_get)\n"
         "- send_motor(pin,speed)->void  DC motor via PWM: speed 0(stop) to 100(full)\n"
-        "- mic_level() -> number        local INMP441 microphone level, 0-100\n"
-        "- buzzer_beep(id,count)->num   make remote buzzer beep count times; id can be number or peer name\n"
-        "- buzzer_note(id,note,dur)->num play one remote buzzer note; note 0=C4, 12=C5, 19=G5, 24=C6, 36=rest; dur in ms\n"
-        "- buzzer_song(id,song)->num    play preset remote buzzer song: 0=twinkle, 1=birthday, 2=jingle\n"
-        "- servo_write(id,angle)->num   set remote servo angle, angle is 0-180 degrees\n"
-        "- servo_sweep(id,from,to,step,delay)->num sweep remote servo; delay is ms between steps\n\n"
+        "- mic_level() -> number        local INMP441 microphone level, 0-100\n");
+
+    size_t command_count = 0;
+    const ControlCommandSpec* commands =
+        control_command_specs(&command_count);
+    for (size_t i = 0; i < command_count; i++) {
+        prompt_append(buf, max_len, &pos, "- %s(",
+                      commands[i].dsl_name);
+        for (uint8_t j = 0; j < commands[i].arg_count; j++) {
+            prompt_append(buf, max_len, &pos, "%s%s",
+                          j ? "," : "", commands[i].args[j].name);
+        }
+        prompt_append(buf, max_len, &pos, ")->number  %s\n",
+                      commands[i].description);
+    }
+
+    prompt_append(buf, max_len, &pos,
+        "\n"
         "Actuator intent rules:\n"
         "- If the user asks a buzzer, doorbell, speaker, or beeper to beep, ring, buzz, sound, or chime, use buzzer_* functions only.\n"
-        "- Do NOT use remote_read() for buzzer/doorbell/servo actuator requests.\n"
+        "- Do NOT use remote_read() for buzzer/doorbell/servo/pump actuator requests.\n"
         "- If the user asks a servo to turn, rotate, move, or set an angle, use servo_write() or servo_sweep().\n"
+        "- If the user asks to run a pump, use pump_write(device,duration_ms) with a finite duration no greater than 30000 ms. Use duration_ms=0 only to turn it off.\n"
         "- For combined actuator requests, keep every requested actuator action. Do not drop buzzer actions when the prompt also mentions servo.\n"
         "- For repeated timed actions, emit an explicit sequence using sleep(ms); the script runtime is sequential, not concurrent.\n"
         "- If the user gives a finite servo angle sequence, do not wrap it in while unless they explicitly ask to repeat or loop.\n"
@@ -627,7 +641,10 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- User asks 'turn the servo to 90 degrees': servo_write(1,90);\n"
         "- User asks 'sweep the servo': servo_sweep(1,0,180,15,200);\n"
         "- User asks 'move servo 90,75,105,90 every 500ms and beep every second': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n"
-        "- User asks '让 servo 舵机先转到 90 度，然后转到 75 度，再转到 105 度，最后回到 90 度，每一步间隔 500 毫秒。同时让蜂鸣器每隔一秒叫一声': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n\n");
+        "- User asks '让 servo 舵机先转到 90 度，然后转到 75 度，再转到 105 度，最后回到 90 度，每一步间隔 500 毫秒。同时让蜂鸣器每隔一秒叫一声': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n\n"
+        "Pump examples:\n"
+        "- User asks '打开水泵5秒': pump_write(\"pump\",5000);\n"
+        "- User asks '关闭水泵': pump_write(\"pump\",0);\n\n");
 
     // Device resolution — teach the model to map vague/fuzzy references
     // (a device type or function word, with no id) to a concrete online peer.
@@ -635,14 +652,28 @@ int llm_client_build_system_prompt(char* buf, int max_len)
     // ever spelling out "id 为几的".
     prompt_append(buf, max_len, &pos,
         "Device resolution (IMPORTANT — resolve vague references yourself):\n"
-        "- Users usually name a device only by its TYPE or FUNCTION and give NO id, e.g. '舵机'(servo), '蜂鸣器'/'门铃'/'喇叭'(buzzer), '灯'(light), '传感器'/'温度'/'湿度'/'光照'/'气体'/'雨'(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.\n"
-        "- Each online device below is tagged with type=<servo|buzzer|sensor>. Match the user's word to a device by its type FIRST, then by name, then by capabilities text; call the builtin with that device's id or name.\n"
-        "- Synonyms to match: 舵机/伺服/servo -> type=servo (has servo_write); 蜂鸣器/门铃/喇叭/beeper/buzzer/doorbell -> type=buzzer (has buzzer_beep); 传感器/sensor and any measured quantity (温度/湿度/光照/气体/co2/雨/振动) -> type=sensor.\n"
+        "- Users usually name a device only by its TYPE or FUNCTION and give NO id. This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.\n"
+        "- Each online device below is tagged with canonical types. Match the user's word by type FIRST, then by name, then by capabilities text; call the builtin with that device's id or name.\n"
         "- If exactly ONE online device matches the type, use it even when the request is vague ('舵机转一下', '蜂鸣器响两声', '看看传感器').\n"
         "- If SEVERAL devices match the same type, pick the one whose name the user mentioned; otherwise the FIRST matching device below, and add print(\"using <name>\"); so the user sees which device was chosen. Never ask to clarify.\n"
         "- If NO device list is available, still emit the most likely builtin call using id=1.\n"
-        "- Vague verbs: for a SENSOR, '怎么样'/'看看'/'状态'/'读一下'/'现在多少' means read and print it, e.g. print(read_sensor(<id>)). For an ACTUATOR, a vague '怎么样'/'试一下'/'动一下'/'测试' means perform ONE short safe demo action: a servo -> servo_sweep(<id>,0,180,15,200); a buzzer -> buzzer_beep(<id>,2).\n"
+        "- Vague verbs: for a SENSOR, '怎么样'/'看看'/'状态'/'读一下'/'现在多少' means read and print it, e.g. print(read_sensor(<id>)). For an ACTUATOR, a vague '怎么样'/'试一下'/'动一下'/'测试' means perform ONE short safe demo action: a servo -> servo_sweep(<id>,0,180,15,200); a buzzer -> buzzer_beep(<id>,2); a pump -> pump_write(<id>,2000).\n"
         "- When you pick a device, prefer calling it by its name string (e.g. servo_write(\"servo\",90)) so the mapping is explicit.\n\n");
+
+    size_t type_count = 0;
+    const DeviceTypeSpec* type_specs =
+        peer_mgr_device_type_specs(&type_count);
+    prompt_append(buf, max_len, &pos, "Canonical device types and aliases:\n");
+    for (size_t i = 0; i < type_count; i++) {
+        prompt_append(buf, max_len, &pos, "- %s: ",
+                      type_specs[i].canonical);
+        for (size_t j = 0; j < type_specs[i].alias_count; j++) {
+            prompt_append(buf, max_len, &pos, "%s%s",
+                          j ? "/" : "", type_specs[i].aliases[j]);
+        }
+        prompt_append(buf, max_len, &pos, "\n");
+    }
+    prompt_append(buf, max_len, &pos, "\n");
 
     // Online devices — each tagged with a canonical type= so the model can
     // ground vague references (grounding step). peer_mgr_type_tags() derives
@@ -709,30 +740,97 @@ static void extract_script_from_response(const char* response, char* script_out,
 // Function-calling (tools) support — hybrid path
 // ====================================================================
 
-// Tool schema sent to DeepSeek. Kept as a parsed JSON literal for
-// readability. 'device' is intentionally string-or-number so the model can
-// pass the user's reference verbatim (id, exact name, or a type word like
-// "servo"/"舵机"), which is what lets the master do local disambiguation.
-static const char* TOOLS_JSON =
-"["
-"{\"type\":\"function\",\"function\":{\"name\":\"servo_write\",\"description\":\"Set a servo angle 0-180 degrees.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"],\"description\":\"device id, exact name, or type word (servo/舵机)\"},\"angle\":{\"type\":\"number\"}},\"required\":[\"device\",\"angle\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"servo_sweep\",\"description\":\"Sweep a servo between two angles; delay is ms between steps.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"from\":{\"type\":\"number\"},\"to\":{\"type\":\"number\"},\"step\":{\"type\":\"number\"},\"delay\":{\"type\":\"number\"}},\"required\":[\"device\",\"from\",\"to\",\"step\",\"delay\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_beep\",\"description\":\"Beep a buzzer count times.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"count\":{\"type\":\"number\"}},\"required\":[\"device\",\"count\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_note\",\"description\":\"Play one buzzer note. note:0=C4,12=C5,19=G5,24=C6,36=rest; dur ms.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"note\":{\"type\":\"number\"},\"dur\":{\"type\":\"number\"}},\"required\":[\"device\",\"note\",\"dur\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"buzzer_song\",\"description\":\"Play a preset song: 0=twinkle,1=birthday,2=jingle.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]},\"song\":{\"type\":\"number\"}},\"required\":[\"device\",\"song\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"read_sensor\",\"description\":\"Read and print a sensor value.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"device\":{\"type\":[\"string\",\"number\"]}},\"required\":[\"device\"]}}},"
-"{\"type\":\"function\",\"function\":{\"name\":\"run_script\",\"description\":\"Run a full ESP-LEGO DSL script for complex, multi-step, conditional or looping logic.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\"}},\"required\":[\"script\"]}}}"
-"]";
-
 static void llm_add_tools(cJSON* root)
 {
-    cJSON* tools = cJSON_Parse(TOOLS_JSON);
-    if (tools) {
-        cJSON_AddItemToObject(root, "tools", tools);
-        cJSON_AddStringToObject(root, "tool_choice", "auto");
-    } else {
-        ESP_LOGW(TAG, "Failed to parse TOOLS_JSON; sending request without tools");
+    cJSON* tools = cJSON_CreateArray();
+    if (tools == NULL) return;
+
+    size_t count = 0;
+    const ControlCommandSpec* specs = control_command_specs(&count);
+    for (size_t i = 0; i < count; i++) {
+        cJSON* tool = cJSON_CreateObject();
+        cJSON* function = cJSON_CreateObject();
+        cJSON* parameters = cJSON_CreateObject();
+        cJSON* properties = cJSON_CreateObject();
+        cJSON* required = cJSON_CreateArray();
+        if (!tool || !function || !parameters || !properties || !required) {
+            cJSON_Delete(tool);
+            cJSON_Delete(function);
+            cJSON_Delete(parameters);
+            cJSON_Delete(properties);
+            cJSON_Delete(required);
+            cJSON_Delete(tools);
+            ESP_LOGW(TAG, "Failed to allocate LLM tool schema");
+            return;
+        }
+        cJSON_AddStringToObject(tool, "type", "function");
+        cJSON_AddStringToObject(function, "name", specs[i].dsl_name);
+        cJSON_AddStringToObject(function, "description",
+                                specs[i].description);
+        cJSON_AddStringToObject(parameters, "type", "object");
+        for (uint8_t j = 0; j < specs[i].arg_count; j++) {
+            const ControlArgSpec* arg = &specs[i].args[j];
+            cJSON* property = cJSON_CreateObject();
+            if (property == NULL) continue;
+            if (arg->kind == CONTROL_ARG_DEVICE) {
+                cJSON* types = cJSON_CreateArray();
+                cJSON_AddItemToArray(types, cJSON_CreateString("string"));
+                cJSON_AddItemToArray(types, cJSON_CreateString("number"));
+                cJSON_AddItemToObject(property, "type", types);
+            } else {
+                cJSON_AddStringToObject(property, "type", "number");
+                cJSON_AddNumberToObject(property, "minimum",
+                                        arg->min_value);
+                cJSON_AddNumberToObject(property, "maximum",
+                                        arg->max_value);
+            }
+            cJSON_AddStringToObject(property, "description",
+                                    arg->description);
+            cJSON_AddItemToObject(properties, arg->name, property);
+            cJSON_AddItemToArray(required, cJSON_CreateString(arg->name));
+        }
+        cJSON_AddItemToObject(parameters, "properties", properties);
+        cJSON_AddItemToObject(parameters, "required", required);
+        cJSON_AddItemToObject(function, "parameters", parameters);
+        cJSON_AddItemToObject(tool, "function", function);
+        cJSON_AddItemToArray(tools, tool);
     }
+
+    cJSON* run_tool = cJSON_CreateObject();
+    cJSON* run_function = cJSON_CreateObject();
+    cJSON* run_parameters = cJSON_CreateObject();
+    cJSON* run_properties = cJSON_CreateObject();
+    cJSON* run_script = cJSON_CreateObject();
+    cJSON* run_required = cJSON_CreateArray();
+    if (!run_tool || !run_function || !run_parameters || !run_properties ||
+        !run_script || !run_required) {
+        cJSON_Delete(run_tool);
+        cJSON_Delete(run_function);
+        cJSON_Delete(run_parameters);
+        cJSON_Delete(run_properties);
+        cJSON_Delete(run_script);
+        cJSON_Delete(run_required);
+        cJSON_Delete(tools);
+        ESP_LOGW(TAG, "Failed to allocate run_script tool schema");
+        return;
+    }
+    cJSON_AddStringToObject(run_tool, "type", "function");
+    cJSON_AddStringToObject(run_function, "name", "run_script");
+    cJSON_AddStringToObject(
+        run_function, "description",
+        "Run a full ESP-LEGO DSL script for complex or multi-step logic.");
+    cJSON_AddStringToObject(run_parameters, "type", "object");
+    cJSON_AddStringToObject(run_script, "type", "string");
+    cJSON_AddItemToObject(run_properties, "script", run_script);
+    cJSON_AddItemToArray(run_required, cJSON_CreateString("script"));
+    cJSON_AddItemToObject(run_parameters, "properties", run_properties);
+    cJSON_AddItemToObject(run_parameters, "required", run_required);
+    cJSON_AddItemToObject(run_function, "parameters", run_parameters);
+    cJSON_AddItemToObject(run_tool, "function", run_function);
+    cJSON_AddItemToArray(tools, run_tool);
+
+    cJSON_AddItemToObject(root, "tools", tools);
+    cJSON_AddStringToObject(root, "tool_choice", "auto");
 }
 
 // In-place replace every occurrence of `from` with `to` in a bounded buffer.
@@ -752,11 +850,18 @@ static void str_replace_all(char* buf, int buf_size, const char* from, const cha
 }
 
 // Format a numeric tool argument as a script literal ("90", "0.5").
-static void num_arg_literal(cJSON* args, const char* key, char* out, int out_len)
+static bool num_arg_literal(cJSON* args, const ControlArgSpec* spec,
+                            char* out, int out_len)
 {
-    cJSON* v = args ? cJSON_GetObjectItem(args, key) : NULL;
-    double d = (v && cJSON_IsNumber(v)) ? v->valuedouble : 0.0;
+    cJSON* v = args ? cJSON_GetObjectItem(args, spec->name) : NULL;
+    if (!v || !cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble < spec->min_value ||
+        v->valuedouble > spec->max_value) {
+        return false;
+    }
+    double d = v->valuedouble;
     snprintf(out, out_len, "%g", d);
+    return true;
 }
 
 // Record every ACTIVE peer matching `type` as a clarify option.
@@ -782,6 +887,7 @@ static void fill_clarify_options(LlmClarify* clarify, const char* type)
 //   otherwise         -> "\"raw\""     (runtime resolves or fails)
 static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
                                    char clarify_type[16],
+                                   const char* expected_type,
                                    char* out, int out_len)
 {
     if (device && cJSON_IsNumber(device)) {
@@ -789,9 +895,11 @@ static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
         return;
     }
 
-    const char* s = (device && cJSON_IsString(device)) ? device->valuestring : NULL;
+    const char* s =
+        (device && cJSON_IsString(device)) ? device->valuestring : NULL;
+    if (!s || !s[0]) s = expected_type;
     if (!s || !s[0]) {
-        snprintf(out, out_len, "1");   // no device given -> best-effort id 1
+        snprintf(out, out_len, "1");
         return;
     }
 
@@ -853,35 +961,35 @@ static void compile_tool_call(const char* fname, cJSON* args,
         return;
     }
 
-    cJSON* device = args ? cJSON_GetObjectItem(args, "device") : NULL;
-    char dev[24];
-    resolve_device_literal(device, clarify, clarify_type, dev, sizeof(dev));
-
-    char a[24], b[24], c[24], d[24];
-    if (strcmp(fname, "servo_write") == 0) {
-        num_arg_literal(args, "angle", a, sizeof(a));
-        prompt_append(script, max_len, pos, "servo_write(%s,%s);\n", dev, a);
-    } else if (strcmp(fname, "servo_sweep") == 0) {
-        num_arg_literal(args, "from",  a, sizeof(a));
-        num_arg_literal(args, "to",    b, sizeof(b));
-        num_arg_literal(args, "step",  c, sizeof(c));
-        num_arg_literal(args, "delay", d, sizeof(d));
-        prompt_append(script, max_len, pos, "servo_sweep(%s,%s,%s,%s,%s);\n",
-                      dev, a, b, c, d);
-    } else if (strcmp(fname, "buzzer_beep") == 0) {
-        num_arg_literal(args, "count", a, sizeof(a));
-        prompt_append(script, max_len, pos, "buzzer_beep(%s,%s);\n", dev, a);
-    } else if (strcmp(fname, "buzzer_note") == 0) {
-        num_arg_literal(args, "note", a, sizeof(a));
-        num_arg_literal(args, "dur",  b, sizeof(b));
-        prompt_append(script, max_len, pos, "buzzer_note(%s,%s,%s);\n", dev, a, b);
-    } else if (strcmp(fname, "buzzer_song") == 0) {
-        num_arg_literal(args, "song", a, sizeof(a));
-        prompt_append(script, max_len, pos, "buzzer_song(%s,%s);\n", dev, a);
-    } else if (strcmp(fname, "read_sensor") == 0) {
-        prompt_append(script, max_len, pos, "print(read_sensor(%s));\n", dev);
+    const ControlCommandSpec* spec = control_command_find(fname);
+    if (spec == NULL || args == NULL ||
+        spec->arg_count > CONTROL_COMMAND_MAX_ARGS) {
+        return;
     }
-    // Unknown tool name -> ignored.
+
+    char literals[CONTROL_COMMAND_MAX_ARGS][32] = {};
+    const char* literal_ptrs[CONTROL_COMMAND_MAX_ARGS] = {};
+    for (uint8_t i = 0; i < spec->arg_count; i++) {
+        literal_ptrs[i] = literals[i];
+        if (spec->args[i].kind == CONTROL_ARG_DEVICE) {
+            cJSON* device = cJSON_GetObjectItem(args, spec->args[i].name);
+            resolve_device_literal(device, clarify, clarify_type,
+                                   spec->device_type,
+                                   literals[i], sizeof(literals[i]));
+        } else if (!num_arg_literal(args, &spec->args[i], literals[i],
+                                    sizeof(literals[i]))) {
+            ESP_LOGW(TAG, "Invalid tool argument %s.%s",
+                     fname, spec->args[i].name);
+            return;
+        }
+    }
+
+    char statement[192];
+    int written = control_command_format_dsl(
+        fname, literal_ptrs, spec->arg_count, statement, sizeof(statement));
+    if (written > 0) {
+        prompt_append(script, max_len, pos, "%s", statement);
+    }
 }
 
 // ====================================================================

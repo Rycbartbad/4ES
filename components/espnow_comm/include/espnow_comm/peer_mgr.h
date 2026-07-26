@@ -41,6 +41,14 @@ typedef struct {
     int      dedup_count;
 } PeerEntry;
 
+typedef struct {
+    const char* canonical;
+    const char* const* aliases;
+    size_t alias_count;
+    const char* const* match_tokens;
+    size_t match_token_count;
+} DeviceTypeSpec;
+
 #define MAX_PEERS CONFIG_MAX_PEERS
 
 // New announce handler — auto-assigns module_id if MAC is new
@@ -64,9 +72,11 @@ PeerEntry* peer_mgr_find_by_mac_and_id(const uint8_t* mac, uint8_t module_id);
 // A user/LLM often refers to a device by its function word ("舵机",
 // "buzzer") with no id.  These helpers map such vague references to a
 // concrete peer, based on the peer's name + capability descriptor.
-// Canonical type tags are the literal strings "servo", "buzzer",
-// "sensor".
+// Canonical types, aliases, and capability match tokens come from one
+// read-only catalog. The returned catalog is valid for the process lifetime.
 // ------------------------------------------------------------------
+
+const DeviceTypeSpec* peer_mgr_device_type_specs(size_t* out_count);
 
 // True if `entry` can act as the given canonical type ("servo"/"buzzer"/
 // "sensor"), judged from its name and capability text.

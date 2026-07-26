@@ -3,8 +3,11 @@
 .SYNOPSIS
     Build, flash, and monitor ESP-LEGO sensor firmware (ESP32-C3).
 .DESCRIPTION
-    Auto-switches configuration to sensor role. Usage:
+    Auto-switches configuration to sensor role. The default actuator profile
+    remains the existing buzzer firmware; pass -Profile pump for a timed pump.
+    Usage:
       .\scripts\build_sensor.ps1              # build only
+      .\scripts\build_sensor.ps1 -Profile pump
       .\scripts\build_sensor.ps1 -Flash       # build + auto-detect COM + flash
       .\scripts\build_sensor.ps1 -Monitor     # build + flash + serial monitor
       .\scripts\build_sensor.ps1 -Port COM5   # specify COM port manually
@@ -14,14 +17,19 @@
     Build, flash, then open serial monitor.
 .PARAMETER Port
     COM port (e.g. COM5). Auto-detected if omitted.
+.PARAMETER Profile
+    Actuator firmware profile: buzzer (default) or pump.
 #>
 param(
     [switch]$Flash,
     [switch]$Monitor,
-    [string]$Port
+    [string]$Port,
+    [ValidateSet("buzzer", "pump")]
+    [string]$Profile = "buzzer"
 )
 
 $ErrorActionPreference = "Stop"
+$Profile = $Profile.ToLowerInvariant()
 
 . "$PSScriptRoot\idf_env.ps1"
 Initialize-IdfEnvironment -Chip esp32c3
@@ -35,7 +43,13 @@ function Write-Warn($msg) { Write-Host "  ⚠ $msg" -ForegroundColor Yellow }
 function Is-Sensor-Config {
     $t = Select-String -Path sdkconfig -Pattern 'CONFIG_IDF_TARGET="esp32c3"' -Quiet
     $r = Select-String -Path sdkconfig -Pattern 'CONFIG_DEVICE_ROLE_SENSOR=y' -Quiet
-    if (-not ($t -and $r)) { return $false }
+    $profile_pattern = if ($Profile -eq "pump") {
+        'CONFIG_SENSOR_ACTUATOR_PUMP=y'
+    } else {
+        'CONFIG_SENSOR_ACTUATOR_BUZZER=y'
+    }
+    $p = Select-String -Path sdkconfig -Pattern $profile_pattern -Quiet
+    if (-not ($t -and $r -and $p)) { return $false }
 
     # Also check CMakeCache target — may be stale from previous build
     if (Test-Path "build\CMakeCache.txt") {
@@ -48,12 +62,20 @@ function Is-Sensor-Config {
 # ── step 1: auto-switch config ──────────────────────────────────────
 Write-Step "Checking configuration..."
 
-$saved_config = "sdkconfig.sensor"
+$saved_config = if ($Profile -eq "pump") {
+    "sdkconfig.sensor.pump"
+} else {
+    "sdkconfig.sensor"
+}
+$config_defaults = "sdkconfig.defaults;sdkconfig.defaults.sensor"
+if ($Profile -eq "pump") {
+    $config_defaults += ";sdkconfig.defaults.pump"
+}
 
 if (-not (Test-Path sdkconfig)) {
     # No config at all — generate fresh
-    Write-Warn "No sdkconfig found — generating sensor config..."
-    $env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.defaults.sensor"
+    Write-Warn "No sdkconfig found — generating $Profile sensor config..."
+    $env:SDKCONFIG_DEFAULTS = $config_defaults
     & $python "$idf_path\tools\idf.py" set-target esp32c3 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host "set-target FAILED" -ForegroundColor Red; exit 1 }
     # Save for next time
@@ -63,7 +85,7 @@ if (-not (Test-Path sdkconfig)) {
 else {
     $current_ok = Is-Sensor-Config
     if ($current_ok) {
-        Write-Ok "Already sensor config (esp32c3 + DEVICE_ROLE_SENSOR)"
+        Write-Ok "Already $Profile sensor config (esp32c3 + DEVICE_ROLE_SENSOR)"
     }
     else {
         Write-Warn "Current config is NOT sensor — switching..."
@@ -78,7 +100,7 @@ else {
         & $python "$idf_path\tools\idf.py" fullclean 2>&1 | Out-Null
         if (-not (Test-Path $saved_config)) {
             # No saved sensor config — generate fresh with set-target
-            $env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.defaults.sensor"
+            $env:SDKCONFIG_DEFAULTS = $config_defaults
             & $python "$idf_path\tools\idf.py" set-target esp32c3 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-Host "set-target FAILED" -ForegroundColor Red; exit 1 }
             Copy-Item sdkconfig $saved_config -Force
@@ -88,7 +110,7 @@ else {
 }
 
 # ── step 2: build ───────────────────────────────────────────────────
-Write-Step "Building SENSOR firmware (ESP32-C3)..."
+Write-Step "Building SENSOR firmware (ESP32-C3, profile=$Profile)..."
 & $python "$idf_path\tools\idf.py" build
 if ($LASTEXITCODE -ne 0) { Write-Host "BUILD FAILED" -ForegroundColor Red; exit 1 }
 
