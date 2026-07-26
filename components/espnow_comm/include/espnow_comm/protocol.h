@@ -25,6 +25,7 @@ typedef enum {
 #define CMD_BUZZER_NOTE    0x0013
 #define CMD_BUZZER_MELODY  0x0014
 #define CMD_SERVO_WRITE    0x0020
+#define CMD_PUMP_WRITE     0x0030
 
 // ── Data exchange (msg_type-driven) ──
 // DATA_REQ → submodule reads ALL its sensors → replies DATA_RESP

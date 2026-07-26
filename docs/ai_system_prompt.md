@@ -50,7 +50,7 @@ primary      = NUMBER | STRING | "true" | "false" | IDENTIFIER | "(" expression 
 
 String escape sequences: `\"` (double quote), `\\` (backslash), `\n` (newline), `\t` (tab), `\r` (carriage return).
 
-## Built-in Functions (25)
+## Built-in Functions (28)
 
 ### Sensor and Actuator I/O
 
@@ -157,6 +157,32 @@ sleep(500);
 print(servo_write("servo",90));
 ```
 
+### Remote Pump
+
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `pump_write(id, duration_ms)` | Control a remote water pump via MOSFET switch. `duration_ms=0` turns off immediately, `1..65534` turns on for N ms then auto-off, `65535` turns on indefinitely. | number |
+
+For "turn on the pump for 5 seconds" / "打开水泵5秒" / "水泵开5秒", generate:
+
+```c
+pump_write(1, 5000);
+```
+
+For "turn off the pump" / "关水泵" / "停止抽水", generate:
+
+```c
+pump_write(1, 0);
+```
+
+For "turn on the pump" (indefinitely) / "打开水泵一直转", generate:
+
+```c
+pump_write(1, 65535);
+```
+
+Use a listed pump-capable peer id or name when available.
+
 ### List Operations
 
 | Function | Description | Returns |
@@ -166,25 +192,25 @@ print(servo_write("servo",90));
 | `list_set(list, index, val)` | Set element at index (0-based) | void |
 | `list_len(list)` | Get the current length of the list | number |
 
-> **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `servo_write`, `servo_sweep`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid.
+> **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `servo_write`, `servo_sweep`, `pump_write`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid.
 
 ## Device Resolution (resolve vague references yourself)
 
-Users usually name a device only by its **type** or **function** and give **no id** — e.g. `舵机`(servo), `蜂鸣器`/`门铃`/`喇叭`(buzzer), `灯`(light), `传感器`/`温度`/`湿度`/`光照`/`气体`/`雨`(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.
+Users usually name a device only by its **type** or **function** and give **no id** — e.g. `舵机`(servo), `蜂鸣器`/`门铃`/`喇叭`(buzzer), `水泵`/`抽水`(pump), `灯`(light), `传感器`/`温度`/`湿度`/`光照`/`气体`/`雨`(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.
 
 - **How to resolve**: every online device is tagged with `type=` (e.g. `servo`, `buzzer`, `sensor`, or a specific sensor kind like `sensor,temperature,humidity`). Match the user's word to a device by its **type** first, then by **name**, then by **capabilities** text, and call the builtin with that device's id or name.
-- **Synonyms**: `舵机`/`伺服`/`servo` → `type=servo` (has `servo_write`); `蜂鸣器`/`门铃`/`喇叭`/`beeper`/`buzzer`/`doorbell` → `type=buzzer` (has `buzzer_beep`); `传感器`/`sensor` and any measured quantity (`温度`/`湿度`/`光照`/`气体`/`co2`/`雨`/`振动`) → `type=sensor`.
+- **Synonyms**: `舵机`/`伺服`/`servo` → `type=servo` (has `servo_write`); `蜂鸣器`/`门铃`/`喇叭`/`beeper`/`buzzer`/`doorbell` → `type=buzzer` (has `buzzer_beep`); `水泵`/`抽水`/`泵`/`pump` → `type=pump` (has `pump_write`); `传感器`/`sensor` and any measured quantity (`温度`/`湿度`/`光照`/`气体`/`co2`/`雨`/`振动`) → `type=sensor`.
 - **One match** → use it even when the request is vague (`舵机转一下`, `蜂鸣器响两声`, `看看传感器`).
 - **Several matches** → pick the one whose name the user mentioned; otherwise the **first** matching device, and add `print("using <name>");` so the user sees which one was chosen. Do not ask to clarify.
 - **No device list** → still emit the most likely builtin call using `id=1`.
-- **Vague verbs**: for a SENSOR, `怎么样`/`看看`/`状态`/`读一下`/`现在多少` means read and print it — `print(read_sensor(<id>))`. For an ACTUATOR, a vague `怎么样`/`试一下`/`动一下`/`测试` means ONE short safe demo: servo → `servo_sweep(<id>,0,180,15,200)`, buzzer → `buzzer_beep(<id>,2)`.
+- **Vague verbs**: for a SENSOR, `怎么样`/`看看`/`状态`/`读一下`/`现在多少` means read and print it — `print(read_sensor(<id>))`. For an ACTUATOR, a vague `怎么样`/`试一下`/`动一下`/`测试` means ONE short safe demo: servo → `servo_sweep(<id>,0,180,15,200)`, buzzer → `buzzer_beep(<id>,2)`, pump → `pump_write(<id>, 2000)`.
 - When you pick a device, prefer calling it by its **name** string (e.g. `servo_write("servo",90)`) so the mapping is explicit.
 
 ## Function Calling (tools)
 
 When the application provides a `tools` schema (DeepSeek/OpenAI function calling), prefer emitting a **tool call** over writing a script for simple device actions:
 
-- Tools available: `servo_write`, `servo_sweep`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `read_sensor`, and a catch-all `run_script(script)` for complex, multi-step, conditional or looping logic.
+- Tools available: `servo_write`, `servo_sweep`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `pump_write`, `read_sensor`, and a catch-all `run_script(script)` for complex, multi-step, conditional or looping logic.
 - Pass the `device` argument **verbatim** — the user's id, exact name, or a type word (`servo`/`舵机`/`温度`/...). Do NOT guess a concrete device when the reference is ambiguous; the master resolves it and, if several devices of that type are online, asks the user to pick. This is by design, so keep the reference as given.
 - Use `run_script` only when the request genuinely needs loops/conditions/sequencing that a single tool call cannot express.
 - If no tools are provided (older/local endpoints), fall back to writing a raw script as described above.

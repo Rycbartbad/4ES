@@ -5,7 +5,7 @@
  *
  * ESP-LEGO V1.0 — Built-in functions (P6)
  *
- * 27 builtins registered into the global environment:
+ * 28 builtins registered into the global environment:
  *
  *   GPIO/ADC/PWM:      digital_read, digital_write, analog_read, analog_write
  *   Timing:            sleep
@@ -14,6 +14,7 @@
  *   ESP-NOW comm:      remote_read, espnow_send
  *   Remote buzzer:     buzzer_beep, buzzer_note, buzzer_song
  *   Remote servo:      servo_write, servo_sweep
+ *   Remote pump:       pump_write
  *   List ops:          list_new, list_get, list_set, list_len, list_free
  *   Aggregation:       remote_read_avg, remote_read_max, remote_read_min
  *   Cached remote:     read_sensor (LCD-synced), send_motor, mic_level
@@ -132,6 +133,7 @@ static Value bif_buzzer_note(Value* args, int n, ExecutionContext* ctx);
 static Value bif_buzzer_song(Value* args, int n, ExecutionContext* ctx);
 static Value bif_servo_write(Value* args, int n, ExecutionContext* ctx);
 static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx);
+static Value bif_pump_write(Value* args, int n, ExecutionContext* ctx);
 
 // ---- Registration table ----------------------------------------------
 
@@ -163,6 +165,7 @@ static const BuiltinEntry s_builtin_entries[] = {
     {"buzzer_song",      2, bif_buzzer_song},
     {"servo_write",      2, bif_servo_write},
     {"servo_sweep",      5, bif_servo_sweep},
+    {"pump_write",       2, bif_pump_write},
 };
 
 // ---- Persistent FuncObj array for builtins (body = NULL = builtin) ---
@@ -298,6 +301,7 @@ static bool resolve_module_id_arg(const char* func,
             if (tp == NULL &&
                 strcmp(type, "servo") != 0 &&
                 strcmp(type, "buzzer") != 0 &&
+                strcmp(type, "pump") != 0 &&
                 strcmp(type, "sensor") != 0) {
                 tp = peer_mgr_find_by_type("sensor", &match_count);
             }
@@ -358,6 +362,7 @@ Value call_builtin_by_name(const char* name, const Value* args,
     if (strcmp(name, "buzzer_song")     == 0) return bif_buzzer_song(local_args, n, ctx);
     if (strcmp(name, "servo_write")     == 0) return bif_servo_write(local_args, n, ctx);
     if (strcmp(name, "servo_sweep")     == 0) return bif_servo_sweep(local_args, n, ctx);
+    if (strcmp(name, "pump_write")      == 0) return bif_pump_write(local_args, n, ctx);
 
     // Not found — signal constraint violation
     ctx->constraint_violated = true;
@@ -1150,4 +1155,34 @@ static Value bif_servo_sweep(Value* args, int n, ExecutionContext* ctx)
     }
 
     return bval_num((double)last_err);
+}
+
+// ====================================================================
+// 28. pump_write(id, duration_ms) — remote water pump timed control
+//     duration_ms = 0           → turn off immediately
+//     duration_ms = 1..65534    → turn on for N ms, sensor auto-off
+//     duration_ms = 65535       → turn on indefinitely
+// ====================================================================
+
+static Value bif_pump_write(Value* args, int n, ExecutionContext* ctx)
+{
+    if (!check_args("pump_write", n, 2) || args[1].type != VAL_NUM) {
+        return bval_num(-1);
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg("pump_write", &args[0], ctx, &module_id)) {
+        return bval_num(-1);
+    }
+
+    int dur = (int)args[1].num;
+    if (dur < 0) dur = 0;
+    if (dur > 65535) dur = 65535;
+
+    uint16_t duration_ms = (uint16_t)dur;
+    uint8_t payload[2] = { (uint8_t)(duration_ms >> 8),
+                           (uint8_t)(duration_ms & 0xFF) };
+    esp_err_t err = espnow_comm_send_cmd(module_id, CMD_PUMP_WRITE,
+                                         payload, sizeof(payload));
+    return bval_num((double)err);
 }

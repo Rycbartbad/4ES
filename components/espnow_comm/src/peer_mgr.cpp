@@ -590,6 +590,9 @@ bool peer_mgr_matches_type(const PeerEntry* entry, const char* type)
     if (strcmp(type, "buzzer") == 0) {
         return PEER_HAS("buzzer") || PEER_HAS("doorbell") || PEER_HAS("beep");
     }
+    if (strcmp(type, "pump") == 0) {
+        return PEER_HAS("pump");
+    }
 
     // Sensor sub-types (specific) — let the model/interpreter pick the right
     // sensor when several are online (e.g. "温度" vs "光照").
@@ -643,6 +646,7 @@ static const SynonymEntry kSynonyms[] = {
     { "servo", "servo" }, { "舵机", "servo" }, { "伺服", "servo" },
     { "buzzer", "buzzer" }, { "doorbell", "buzzer" }, { "beeper", "buzzer" },
     { "蜂鸣器", "buzzer" }, { "门铃", "buzzer" }, { "喇叭", "buzzer" },
+    { "pump", "pump" }, { "水泵", "pump" }, { "抽水", "pump" }, { "泵", "pump" },
     // sensor sub-types (specific — keep before the generic sensor rows)
     { "温度", "temperature" }, { "temperature", "temperature" }, { "temp", "temperature" },
     { "湿度", "humidity" }, { "humidity", "humidity" }, { "humid", "humidity" },
@@ -674,7 +678,7 @@ void peer_mgr_type_tags(const PeerEntry* entry, char* out, size_t out_len)
     // Broad type(s) first, then any specific sensor sub-types the device
     // supports, so the model can match "温度" to a multi-sensor module.
     static const char* kTags[] = {
-        "servo", "buzzer", "sensor",
+        "servo", "buzzer", "pump", "sensor",
         "temperature", "humidity", "light", "gas", "rain", "vibration"
     };
     size_t pos = 0;

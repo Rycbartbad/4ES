@@ -68,6 +68,7 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 
 #define USE_BUZZER           1   // Passive buzzer (PWM melody playback)
 #define USE_SERVO            0   // Hobby servo (50 Hz PWM position control)
+#define USE_PUMP             0   // Water pump (GPIO MOSFET on/off control)
 
 // ====================================================================
 // Buzzer Configuration (passive buzzer via LEDC PWM)
@@ -180,6 +181,21 @@ static const uint16_t s_note_freqs[] = {
 #endif // USE_SERVO
 
 // ====================================================================
+// Pump Configuration (water pump via GPIO MOSFET switch, timed auto-off)
+// ====================================================================
+#if USE_PUMP
+#define PUMP_PIN                GPIO_NUM_5
+// PUMP_PIN output HIGH → MOSFET gate HIGH → pump ON
+// PUMP_PIN output LOW  → MOSFET gate LOW  → pump OFF
+// CMD_PUMP_WRITE payload: 2-byte duration_ms (big-endian uint16)
+//   0          → turn off immediately
+//   1..65534   → turn on for N ms, then auto-off via FreeRTOS timer
+//   65535      → turn on indefinitely (cancel previous timer)
+
+// CMD_PUMP_WRITE is shared in espnow_comm/protocol.h.
+#endif // USE_PUMP
+
+// ====================================================================
 // Capability descriptors — describes sensor function/data format
 // Displayed in web console + injected into LLM prompts.
 // ====================================================================
@@ -188,6 +204,11 @@ static const char* SENSOR_CAPABILITY =
 #if USE_SERVO
     "Servo module: GPIO4 50Hz PWM servo. "
     "Use servo_write(id,angle) and servo_sweep(id,from,to,step,delay). "
+#endif
+#if USE_PUMP
+    "Pump module: GPIO5 MOSFET switch, 5V water pump. "
+    "Use pump_write(id,duration_ms) where duration_ms=0(OFF), "
+    "1..65534(on for N ms), 65535(on indefinitely). "
 #endif
 #if USE_BUZZER
     "Doorbell: GPIO4 passive buzzer. "
@@ -207,7 +228,7 @@ static const char* SENSOR_CAPABILITY =
 #elif USE_SENSOR_RAINDROP
     "Raindrop Sensor: detects rain/moisture (binary). "
     "Returns 1 value: [rain_detected] (0 or 1)."
-#elif !USE_BUZZER && !USE_SERVO
+#elif !USE_BUZZER && !USE_SERVO && !USE_PUMP
     "Generic ADC Sensor: reads analog voltages on pins 4,5,6. "
     "Returns 3 values: [adc_pin4, adc_pin5, adc_pin6] (0-4095)."
 #endif
@@ -375,6 +396,85 @@ static void servo_write_angle(int angle)
 }
 
 #endif // USE_SERVO
+
+// ====================================================================
+// Pump driver (water pump via GPIO MOSFET switch, timed auto-off)
+// ====================================================================
+#if USE_PUMP
+
+#include "driver/gpio.h"
+#include "freertos/timers.h"
+
+static TimerHandle_t s_pump_timer = NULL;
+
+// ── Auto-off timer callback (runs in timer task context) ──
+static void pump_timer_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    gpio_set_level(PUMP_PIN, 0);
+    ESP_LOGI("sensor", "PUMP_AUTO_OFF pin=GPIO%d", (int)PUMP_PIN);
+}
+
+static void pump_init(void)
+{
+    gpio_set_direction(PUMP_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(PUMP_PIN, 0);  // default OFF
+
+    s_pump_timer = xTimerCreate("pump_to", pdMS_TO_TICKS(100),
+                                 pdFALSE,   // one-shot
+                                 NULL,
+                                 pump_timer_cb);
+    if (s_pump_timer == NULL) {
+        ESP_LOGE("sensor", "PUMP: failed to create auto-off timer");
+    }
+
+    ESP_LOGI("sensor", "PUMP_INIT pin=GPIO%d state=OFF", (int)PUMP_PIN);
+}
+
+// duration_ms = 0          → turn off immediately
+// duration_ms = 1..65534   → turn on for N ms, auto-off via timer
+// duration_ms = 65535      → turn on indefinitely (cancel timer)
+static void pump_on_for(uint16_t duration_ms)
+{
+    if (duration_ms == 0) {
+        // Turn off immediately, cancel any pending auto-off timer
+        if (s_pump_timer && xTimerIsTimerActive(s_pump_timer)) {
+            xTimerStop(s_pump_timer, 0);
+        }
+        gpio_set_level(PUMP_PIN, 0);
+        ESP_LOGI("sensor", "PUMP_OFF pin=GPIO%d", (int)PUMP_PIN);
+        return;
+    }
+
+    // Turn on
+    gpio_set_level(PUMP_PIN, 1);
+
+    if (duration_ms == 65535) {
+        // Indefinite on — cancel any pending timer
+        if (s_pump_timer && xTimerIsTimerActive(s_pump_timer)) {
+            xTimerStop(s_pump_timer, 0);
+        }
+        ESP_LOGI("sensor", "PUMP_ON_INDEF pin=GPIO%d", (int)PUMP_PIN);
+    } else {
+        // Timed on — restart/re-arm the one-shot auto-off timer
+        if (s_pump_timer == NULL) {
+            ESP_LOGW("sensor", "PUMP: no timer, manual off required");
+            ESP_LOGI("sensor", "PUMP_ON pin=GPIO%d dur=%ums (no timer!)",
+                     (int)PUMP_PIN, (int)duration_ms);
+            return;
+        }
+        // Stop previous timer if running, then restart with new period
+        if (xTimerIsTimerActive(s_pump_timer)) {
+            xTimerStop(s_pump_timer, 0);
+        }
+        xTimerChangePeriod(s_pump_timer, pdMS_TO_TICKS(duration_ms), 0);
+        xTimerStart(s_pump_timer, 0);
+        ESP_LOGI("sensor", "PUMP_ON pin=GPIO%d dur=%ums",
+                 (int)PUMP_PIN, (int)duration_ms);
+    }
+}
+
+#endif // USE_PUMP
 
 // ====================================================================
 // DHT11 Sensor Definition
@@ -632,7 +732,7 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
     }
     protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 2);
 
-#elif !USE_BUZZER && !USE_SERVO
+#elif !USE_BUZZER && !USE_SERVO && !USE_PUMP
     // Generic ADC sensor — reads pins 4, 5, 6
     #define SENSOR_ADC_PINS   {4, 5, 6}
     #define SENSOR_ADC_COUNT  3
@@ -679,6 +779,19 @@ static void handle_cmd(const uint8_t* src_mac, uint8_t req_seq,
             send_command_ack(src_mac, req_seq);
         } else {
             ESP_LOGW("sensor", "CMD_SERVO_WRITE short payload=%d", payload_len);
+        }
+        return;
+    }
+#endif
+
+#if USE_PUMP
+    if (cmd_id == CMD_PUMP_WRITE) {
+        if (payload_len >= 2) {
+            uint16_t duration_ms = ((uint16_t)payload[0] << 8) | payload[1];
+            pump_on_for(duration_ms);
+            send_command_ack(src_mac, req_seq);
+        } else {
+            ESP_LOGW("sensor", "CMD_PUMP_WRITE short payload=%d (need 2 bytes)", payload_len);
         }
         return;
     }
@@ -910,6 +1023,12 @@ extern "C" void app_main(void)
     servo_init();
     servo_write_angle(90);
     printf("Servo initialized (GPIO4, 50Hz PWM, angle=90)\n");
+#endif
+
+#if USE_PUMP
+    pump_init();
+    printf("Pump initialized (GPIO%d, MOSFET switch, default OFF)\n",
+           (int)PUMP_PIN);
 #endif
 
     // ---- Create command processing queue ----
