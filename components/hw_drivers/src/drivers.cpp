@@ -15,10 +15,11 @@ static const char* TAG = "hw_drivers";
 #define CONFIG_MIC_I2S_SAMPLE_RATE_HZ 16000
 #endif
 
-// INMP441 wiring for the master board. Avoids GPIO10/11/14/15/16/17.
-#define MIC_I2S_SCK_PIN GPIO_NUM_4
-#define MIC_I2S_WS_PIN  GPIO_NUM_5
-#define MIC_I2S_SD_PIN  GPIO_NUM_6
+// INMP441 wiring per U2 (=J3) schematic: pin 4/7/8 = MIC_SD/SCK/WS.
+// Corresponding ESP32-S3 GPIOs: GPIO1 / GPIO41 / GPIO40.
+#define MIC_I2S_SD_PIN  GPIO_NUM_1
+#define MIC_I2S_SCK_PIN GPIO_NUM_41
+#define MIC_I2S_WS_PIN  GPIO_NUM_40
 
 #define MIC_I2S_READ_SAMPLES 512
 #define MIC_I2S_TIMEOUT_MS   100
