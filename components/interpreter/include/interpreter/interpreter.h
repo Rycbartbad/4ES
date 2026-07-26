@@ -26,6 +26,10 @@ typedef struct {
     // Watchdog integration (global atomic flag)
     volatile bool* s_script_timeout_ptr;
 
+    // User-requested cancellation (for example, a replacement script from
+    // the web console). Cancellation is a normal stop, not a runtime error.
+    volatile bool* s_script_abort_ptr;
+
     // Environment pool tracking
     int env_pool_used;
 
@@ -46,7 +50,8 @@ Value execute(ASTNode* ast, Environment* env, ExecutionContext* ctx);
 typedef struct {
     int ast_node_count;
     int ast_tree_depth;
-    int global_bindings_used;   // current env binding count
+    int global_bindings_used;   // projected user bindings after execution
+    int max_function_bindings;  // parameters + declarations in largest function
     int funcs_defined;          // FUNC_DEF nodes in AST
     int list_elements_total;    // sum of list_new(size) params
     bool has_list_in_loop;      // list_new inside while body

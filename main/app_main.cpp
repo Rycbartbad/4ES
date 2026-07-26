@@ -226,7 +226,10 @@ extern "C" void app_main(void)
 
     // ---- 6. Initialise web console (SoftAP + HTTP server) ----
 #if CONFIG_WEB_CONSOLE_ENABLED
-    web_console_init();
+    ret = web_console_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Web console init failed: %s", esp_err_to_name(ret));
+    }
 #endif
 
     // ---- 7. Periodic discovery broadcast (prompts sensors to announce) ----
@@ -372,6 +375,7 @@ static void exec_task(void* pv)
             s_ctx.s_script_timeout_ptr = NULL;
             ESP_LOGW(TAG, "Failed to create watchdog timer");
         }
+        s_ctx.s_script_abort_ptr = &s_script_abort_requested;
 
         // ---- 4. Parse ----
         lexer_init(&lexer, script);
@@ -447,6 +451,7 @@ static void exec_task(void* pv)
             wdt = NULL;
         }
         s_ctx.s_script_timeout_ptr = NULL;
+        s_ctx.s_script_abort_ptr   = NULL;
         s_script_timeout           = false;
         __sync_synchronize();
 

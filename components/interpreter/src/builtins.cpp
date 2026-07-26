@@ -28,6 +28,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -479,11 +480,36 @@ static Value bif_analog_write(Value* args, int n, ExecutionContext* ctx)
 
 static Value bif_sleep(Value* args, int n, ExecutionContext* ctx)
 {
-    (void)ctx;
     if (n >= 1 && args[0].type == VAL_NUM) {
-        int ms = (int)args[0].num;
-        if (ms > 0) {
-            vTaskDelay(pdMS_TO_TICKS(ms));
+        double requested_ms = args[0].num;
+        if (requested_ms > 0) {
+            // Delay in short slices so watchdog expiry and a replacement
+            // script can interrupt sleep(). Clamp before converting the
+            // untrusted numeric value to an integer.
+            uint32_t remaining_ms =
+                requested_ms > (double)UINT32_MAX
+                    ? UINT32_MAX
+                    : (uint32_t)requested_ms;
+            while (remaining_ms > 0) {
+                __sync_synchronize();
+                if (ctx && ctx->s_script_abort_ptr &&
+                    *ctx->s_script_abort_ptr) {
+                    break;
+                }
+                if (ctx && ctx->s_script_timeout_ptr &&
+                    *ctx->s_script_timeout_ptr) {
+                    ctx->constraint_violated = true;
+                    ctx->violation_msg = "Script execution timeout";
+                    break;
+                }
+
+                const uint32_t slice_ms =
+                    remaining_ms > 50U ? 50U : remaining_ms;
+                TickType_t delay_ticks = pdMS_TO_TICKS(slice_ms);
+                if (delay_ticks == 0) delay_ticks = 1;
+                vTaskDelay(delay_ticks);
+                remaining_ms -= slice_ms;
+            }
         }
     }
     return bval_undefined();

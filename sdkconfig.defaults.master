@@ -19,6 +19,14 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# Builtins consume 27 bindings. Keep enough remaining capacity for complex
+# generated scripts without growing the much larger AST or LVGL pools.
+CONFIG_MAX_BINDINGS=48
+
+# LVGL's internal pool is reserved from scarce internal RAM. Keep the verified
+# 32 KiB value until a 64 KiB build is tested as an isolated hardware variable.
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
+
 # ESP-NOW read responses can arrive a few hundred ms after refresh traffic
 # starts, especially while the web UI is polling. Keep the peer online across
 # occasional missed announces.

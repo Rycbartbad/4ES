@@ -37,11 +37,12 @@ static void init(void) {
     ctx_init(&s_ctx); g_print_callback = cap;
 }
 
-static bool run(const char* src) {
+static bool run_internal(const char* src, bool abort_before_execute) {
     ast_pool_reset(); intern_reset(); env_restore_pristine(&s_env);
     ctx_reset(&s_ctx); s_script_timeout = false;
-    s_script_abort_requested = false;
+    s_script_abort_requested = abort_before_execute;
     s_ctx.s_script_timeout_ptr = &s_script_timeout;
+    s_ctx.s_script_abort_ptr = &s_script_abort_requested;
     s_output[0] = 0; s_out_len = 0;
 
     Lexer l; lexer_init(&l, src);
@@ -54,6 +55,10 @@ static bool run(const char* src) {
 
     execute(ast, &s_env, &s_ctx);
     return !s_ctx.constraint_violated;
+}
+
+static bool run(const char* src) {
+    return run_internal(src, false);
 }
 
 static void test_arith(void) {
@@ -147,6 +152,40 @@ static void test_script_isolate(void) {
     TEST_PASS();
 }
 
+static void test_abort_before_first_statement(void) {
+    TEST("Interp: replacement request stops before first statement");
+    TEST_ASSERT(run_internal("while(true){print(\"old\");}", true));
+    TEST_ASSERT_EQUAL_INT(0, s_out_len);
+    TEST_PASS();
+}
+
+static void test_global_binding_preflight(void) {
+    TEST("Interp: global binding exhaustion rejected before execution");
+    ast_pool_reset(); intern_reset(); env_restore_pristine(&s_env);
+    ctx_reset(&s_ctx);
+
+    char source[4096] = {};
+    int used = 0;
+    const int declarations = CONFIG_MAX_BINDINGS - s_env.count + 1;
+    for (int i = 0; i < declarations; i++) {
+        int written = snprintf(source + used, sizeof(source) - (size_t)used,
+                               "var v%d=%d;", i, i);
+        TEST_ASSERT(written > 0);
+        used += written;
+        TEST_ASSERT(used < (int)sizeof(source));
+    }
+
+    Lexer lexer; lexer_init(&lexer, source);
+    Parser parser; parser_init(&parser, &lexer);
+    ASTNode* ast = parser_parse(&parser);
+    TEST_ASSERT(!parser.had_error);
+    ResourceReport report = validate_resources(ast, &s_env);
+    TEST_ASSERT(!report.passed);
+    TEST_ASSERT_STR_EQUAL("Script needs more global bindings than available",
+                          report.fail_reason);
+    TEST_PASS();
+}
+
 void test_interpreter(void) {
     static bool once = false; if (!once) { init(); once = true; }
     printf("\n[Interpreter Tests]\n");
@@ -154,5 +193,6 @@ void test_interpreter(void) {
     test_if_true(); test_if_false();
     test_while(); test_func(); test_func_nest(); test_assign();
     test_compare(); test_logic(); test_multi_stmt(); test_redecl_builtin();
-    test_script_isolate();
+    test_script_isolate(); test_abort_before_first_statement();
+    test_global_binding_preflight();
 }

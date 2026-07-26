@@ -46,9 +46,13 @@ static int  compute_tree_depth(const ASTNode* node);
 // WalkState for validate_resources AST traversal
 typedef struct {
     int  funcs_defined;
+    int  global_bindings_needed;
     int  list_elements_total;
     bool has_list_in_loop;
     bool inside_while;
+    bool inside_function;
+    int  current_function_bindings;
+    int  max_function_bindings;
     int  max_depth;
 } WalkState;
 
@@ -521,6 +525,10 @@ static void execute_statement(ASTNode* node, Environment* env,
             if (ctx->constraint_violated || ctx->has_returned) break;
             // Memory barrier ensures cross-core visibility of watchdog flag
             __sync_synchronize();
+            if (ctx->s_script_abort_ptr &&
+                *ctx->s_script_abort_ptr) {
+                break;
+            }
             if (ctx->s_script_timeout_ptr &&
                 *ctx->s_script_timeout_ptr) {
                 ctx->constraint_violated = true;
@@ -617,10 +625,17 @@ static void execute_statement(ASTNode* node, Environment* env,
 // ====================================================================
 
 static void execute_block_stmts(ASTNode** stmts, int stmt_count,
-                                Environment* env, ExecutionContext* ctx)
+                                 Environment* env, ExecutionContext* ctx)
 {
     for (int i = 0; i < stmt_count; i++) {
         if (ctx->constraint_violated || ctx->has_returned) return;
+
+        // Stop promptly when the web console replaces the current script.
+        // exec_task reports cancellation separately from runtime failures.
+        __sync_synchronize();
+        if (ctx->s_script_abort_ptr && *ctx->s_script_abort_ptr) {
+            return;
+        }
 
         // G6: Detect consecutive remote_read calls
         if (stmts[i]->type == NODE_FUNC_CALL &&
@@ -890,6 +905,16 @@ static void walk_validate(const ASTNode* node, WalkState* ws, int depth)
         break;
 
     case NODE_VAR_DECL:
+        if (ws->inside_function) {
+            ws->current_function_bindings++;
+            if (ws->current_function_bindings >
+                ws->max_function_bindings) {
+                ws->max_function_bindings =
+                    ws->current_function_bindings;
+            }
+        } else {
+            ws->global_bindings_needed++;
+        }
         walk_validate(node->func_body, ws, depth + 1);
         break;
 
@@ -936,10 +961,32 @@ static void walk_validate(const ASTNode* node, WalkState* ws, int depth)
         }
         break;
 
-    case NODE_FUNC_DEF:
+    case NODE_FUNC_DEF: {
         ws->funcs_defined++;
+        if (ws->inside_function) {
+            ws->current_function_bindings++;
+            if (ws->current_function_bindings >
+                ws->max_function_bindings) {
+                ws->max_function_bindings =
+                    ws->current_function_bindings;
+            }
+        } else {
+            ws->global_bindings_needed++;
+        }
+        bool saved_inside = ws->inside_function;
+        int saved_bindings = ws->current_function_bindings;
+        ws->inside_function = true;
+        ws->current_function_bindings = node->param_count;
+        if (ws->current_function_bindings >
+            ws->max_function_bindings) {
+            ws->max_function_bindings =
+                ws->current_function_bindings;
+        }
         walk_validate(node->func_body, ws, depth + 1);
+        ws->inside_function = saved_inside;
+        ws->current_function_bindings = saved_bindings;
         break;
+    }
 
     case NODE_RETURN_STMT:
         walk_validate(node->left, ws, depth + 1);
@@ -967,12 +1014,13 @@ ResourceReport validate_resources(ASTNode* ast, Environment* env)
     r.ast_tree_depth = compute_tree_depth(ast);
     int env_bindings = (env) ? env->count : 0;
     int builtin_bindings = (env_bindings >= BIF_COUNT) ? BIF_COUNT : 0;
-    r.global_bindings_used = env_bindings - builtin_bindings;
-
     WalkState ws;
     memset(&ws, 0, sizeof(ws));
     walk_validate(ast, &ws, 1);
     r.funcs_defined       = ws.funcs_defined;
+    r.global_bindings_used =
+        env_bindings - builtin_bindings + ws.global_bindings_needed;
+    r.max_function_bindings = ws.max_function_bindings;
     r.list_elements_total = ws.list_elements_total;
     r.has_list_in_loop    = ws.has_list_in_loop;
     r.max_parse_depth     = ws.max_depth;
@@ -988,8 +1036,13 @@ ResourceReport validate_resources(ASTNode* ast, Environment* env)
         r.passed = false;
     }
 
-    if (r.global_bindings_used > CONFIG_MAX_BINDINGS * 80 / 100) {
-        r.fail_reason = "Global bindings > 80% capacity";
+    if (ws.global_bindings_needed > CONFIG_MAX_BINDINGS - env_bindings) {
+        r.fail_reason = "Script needs more global bindings than available";
+        r.passed = false;
+    }
+
+    if (r.max_function_bindings > CONFIG_MAX_BINDINGS) {
+        r.fail_reason = "Function scope needs more bindings than available";
         r.passed = false;
     }
 
