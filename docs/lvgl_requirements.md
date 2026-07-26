@@ -15,13 +15,13 @@
 - 主控：ESP32-S3。
 - LCD：ST7789，SPI，240 × 240。
 - Touch：CST816D，I²C 地址 `0x15`。
-- 当前默认引脚：
-  - LCD_CS: GPIO10
-  - LCD_DC: GPIO11
-  - LCD_RST: GPIO12
-  - LCD_BL: GPIO13
+- 当前默认引脚（与 V1.0 物联网扩展板原理图一致，LCD 接 DevKitC-1 J1 的 17-20 脚）：
+  - LCD_CS: GPIO11
+  - LCD_DC: GPIO13
+  - LCD_RST: -1（扩展板未布线，使用软件复位）
+  - LCD_BL: -1（扩展板未布线，背光常亮）
   - LCD_MOSI: GPIO14
-  - LCD_SCLK: GPIO15
+  - LCD_SCLK: GPIO12
   - TOUCH_SDA: GPIO16
   - TOUCH_SCL: GPIO17
   - TOUCH_RST: GPIO18

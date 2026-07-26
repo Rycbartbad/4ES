@@ -24,16 +24,20 @@
  * Default Pin Mapping (ESP32-S3 Free SPI + I2C_NUM_0)
  * ---------------------------------------------------------------------------
  *
+ *  Matches the V1.0 IoT expansion board schematic (物联网扩展板):
+ *  the LCD connector carries only CS/SCK/DC/MOSI from the DevKitC-1
+ *  J1 header (pins 17-20); RST and BL are not routed, so they are -1.
+ *
  *  ST7789 — SPI LCD (240 × 240)
  *
  *    Signal    | GPIO          | ESP-IDF Function     | Description
  *    ----------+---------------+----------------------+------------------------
- *    LCD_CS    | GPIO_NUM_10   | spi_device           | SPI chip select (CS)
- *    LCD_DC    | GPIO_NUM_11   | gpio                 | Data (1) / Command (0)
- *    LCD_RST   | GPIO_NUM_12   | gpio                 | Hardware reset (active low)
- *    LCD_BL    | GPIO_NUM_13   | gpio / ledc          | Backlight enable / PWM
+ *    LCD_CS    | GPIO_NUM_11   | spi_device           | SPI chip select (CS)
+ *    LCD_DC    | GPIO_NUM_13   | gpio                 | Data (1) / Command (0)
+ *    LCD_RST   | -1 (unused)   | –                    | Not routed on expansion board
+ *    LCD_BL    | -1 (unused)   | –                    | Not routed; backlight always on
  *    LCD_MOSI  | GPIO_NUM_14   | spi_device (MOSI)    | SPI master-out slave-in
- *    LCD_SCLK  | GPIO_NUM_15   | spi_device (CLK)     | SPI clock
+ *    LCD_SCLK  | GPIO_NUM_12   | spi_device (CLK)     | SPI clock
  *    (MISO)    | (unused)      | –                    | ST7789 has no MISO
  *
  *  CST816D — I2C Capacitive Touch
@@ -99,22 +103,24 @@ extern "C" {
 
 /** SPI chip select (CS).  Active low. */
 #ifndef PIN_LCD_CS
-#define PIN_LCD_CS   GPIO_NUM_10
+#define PIN_LCD_CS   GPIO_NUM_11
 #endif
 
 /** Data/Command select.  High = pixel data, Low = command byte. */
 #ifndef PIN_LCD_DC
-#define PIN_LCD_DC   GPIO_NUM_11
+#define PIN_LCD_DC   GPIO_NUM_13
 #endif
 
-/** Hardware reset (active low).  Pull low ≥10 µs then release. */
+/** Hardware reset (active low).  -1: not routed on the V1.0 expansion
+ *  board, so the driver relies on the ST7789 software reset instead. */
 #ifndef PIN_LCD_RST
-#define PIN_LCD_RST  GPIO_NUM_12
+#define PIN_LCD_RST  -1
 #endif
 
-/** Backlight control.  High = on, or PWM output if backlight PWM enabled. */
+/** Backlight control.  -1: not routed on the V1.0 expansion board,
+ *  backlight assumed always-on. */
 #ifndef PIN_LCD_BL
-#define PIN_LCD_BL   GPIO_NUM_13
+#define PIN_LCD_BL   -1
 #endif
 
 /** SPI master-out slave-in (MOSI). */
@@ -124,7 +130,7 @@ extern "C" {
 
 /** SPI clock (SCLK). */
 #ifndef PIN_LCD_SCLK
-#define PIN_LCD_SCLK GPIO_NUM_15
+#define PIN_LCD_SCLK GPIO_NUM_12
 #endif
 
 /* ---------- CST816D I2C Touch Pins ---------- */
