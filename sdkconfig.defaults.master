@@ -27,6 +27,11 @@ CONFIG_MAX_BINDINGS=48
 # 32 KiB value until a 64 KiB build is tested as an isolated hardware variable.
 CONFIG_LV_MEM_SIZE_KILOBYTES=32
 
+# Sensor detail labels use LVGL's printf formatter for decimal readings.
+# Without float support, a format such as "%.1f %s" leaves the double
+# unconsumed and the following unit string is read from an invalid address.
+CONFIG_LV_SPRINTF_USE_FLOAT=y
+
 # ESP-NOW read responses can arrive a few hundred ms after refresh traffic
 # starts, especially while the web UI is polling. Keep the peer online across
 # occasional missed announces.

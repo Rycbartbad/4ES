@@ -11,6 +11,10 @@
 #include "espnow_comm/comm.h"
 #include "ui_lvgl_internal.h"
 
+#if CONFIG_DEVICE_ROLE_MASTER && !CONFIG_LV_SPRINTF_USE_FLOAT
+#error "Sensor detail labels require CONFIG_LV_SPRINTF_USE_FLOAT"
+#endif
+
 static constexpr uint32_t DETAIL_HISTORY_WINDOW_MS = 120000;
 
 static UiStatusState* s_state = NULL;

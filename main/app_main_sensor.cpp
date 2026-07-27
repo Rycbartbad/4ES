@@ -64,7 +64,7 @@ static const char* s_module_name = CONFIG_SENSOR_MODULE_NAME;
 #define USE_SENSOR_DHT11     0   // DHT11 temperature and humidity sensor
 #define USE_SENSOR_VIBRATION 0   // Vibration sensor
 #define USE_SENSOR_RAINDROP  0   // Raindrop sensor
-#define USE_SENSOR_BH1750    0   // BH1750 light sensor
+#define USE_SENSOR_BH1750    CONFIG_SENSOR_ACQUISITION_BH1750
 #define USE_SENSOR_JW01      0   // JW01 3-in-1 gas sensor (CO2, TVOC, CH2O)
 
 #define USE_BUZZER           CONFIG_SENSOR_ACTUATOR_BUZZER
@@ -596,13 +596,14 @@ static double raindrop_read() {
 #if USE_SENSOR_BH1750
 #include "driver/i2c.h"
 
-#define I2C_MASTER_SCL_IO           GPIO_NUM_22
-#define I2C_MASTER_SDA_IO           GPIO_NUM_21
+#define I2C_MASTER_SCL_IO           ((gpio_num_t)CONFIG_BH1750_SCL_GPIO)
+#define I2C_MASTER_SDA_IO           ((gpio_num_t)CONFIG_BH1750_SDA_GPIO)
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define BH1750_SENSOR_ADDR          0x23
 
-static void bh1750_init() {
+static bool bh1750_init()
+{
     i2c_config_t conf = {};
     conf.mode = I2C_MODE_MASTER;
     conf.sda_io_num = I2C_MASTER_SDA_IO;
@@ -611,36 +612,68 @@ static void bh1750_init() {
     conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
     conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
     conf.clk_flags = 0;
-    i2c_param_config(I2C_MASTER_NUM, &conf);
-    i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    esp_err_t ret = i2c_param_config(I2C_MASTER_NUM, &conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE("BH1750", "I2C config failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ret = i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE("BH1750", "I2C driver install failed: %s",
+                 esp_err_to_name(ret));
+        return false;
+    }
+    return true;
 }
 
-static double bh1750_read() {
+static bool bh1750_read(double* lux_out)
+{
+    if (lux_out == nullptr) return false;
+
     uint8_t data[2] = {0, 0};
 
     // Send measurement command (One time H-resolution mode 0x20)
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (cmd == nullptr) {
+        ESP_LOGE("BH1750", "Failed to allocate I2C write command");
+        return false;
+    }
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (BH1750_SENSOR_ADDR << 1) | I2C_MASTER_WRITE, true);
     i2c_master_write_byte(cmd, 0x20, true);
     i2c_master_stop(cmd);
-    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
+    esp_err_t ret =
+        i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
     i2c_cmd_link_delete(cmd);
+    if (ret != ESP_OK) {
+        ESP_LOGW("BH1750", "Measurement command failed: %s",
+                 esp_err_to_name(ret));
+        return false;
+    }
 
     vTaskDelay(pdMS_TO_TICKS(180));
 
     // Read 2 bytes of data
     cmd = i2c_cmd_link_create();
+    if (cmd == nullptr) {
+        ESP_LOGE("BH1750", "Failed to allocate I2C read command");
+        return false;
+    }
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (BH1750_SENSOR_ADDR << 1) | I2C_MASTER_READ, true);
     i2c_master_read_byte(cmd, &data[0], I2C_MASTER_ACK);
     i2c_master_read_byte(cmd, &data[1], I2C_MASTER_NACK);
     i2c_master_stop(cmd);
-    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
+    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
     i2c_cmd_link_delete(cmd);
+    if (ret != ESP_OK) {
+        ESP_LOGW("BH1750", "Measurement read failed: %s",
+                 esp_err_to_name(ret));
+        return false;
+    }
 
-    double lux = ((data[0] << 8) | data[1]) / 1.2;
-    return lux;
+    *lux_out = ((data[0] << 8) | data[1]) / 1.2;
+    return true;
 }
 #endif
 
@@ -724,8 +757,15 @@ static void handle_data_req(const uint8_t* src_mac, uint8_t req_seq)
     protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 3);
 
 #elif USE_SENSOR_BH1750
-    double values[1] = {bh1750_read()};
-    protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 1);
+    double lux = 0.0;
+    if (bh1750_read(&lux)) {
+        double values[1] = {lux};
+        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, values, 1);
+    } else {
+        // A zero-length response is deliberately not accepted as a reading by
+        // the Master. It will retry instead of treating an I2C failure as 0 lux.
+        protocol_build_data_resp(resp_buf, &resp_len, 0, req_seq, nullptr, 0);
+    }
 
 #elif USE_SENSOR_RAINDROP
     double values[1] = {raindrop_read()};
@@ -1016,8 +1056,12 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(500));
     printf("JW01 initialized\n");
 #elif USE_SENSOR_BH1750
-    bh1750_init();
-    printf("BH1750 initialized\n");
+    if (!bh1750_init()) {
+        printf("ERROR: BH1750 initialization failed\n");
+    } else {
+        printf("BH1750 initialized (SCL=GPIO%d, SDA=GPIO%d, addr=0x23)\n",
+               CONFIG_BH1750_SCL_GPIO, CONFIG_BH1750_SDA_GPIO);
+    }
 #elif USE_SENSOR_VIBRATION
     vibration_init();
     printf("Vibration sensor initialized\n");
@@ -1068,7 +1112,7 @@ extern "C" void app_main(void)
 
     // ---- Create announce task ----
     tsk = xTaskCreate(announce_task, "announce",
-                      2048, NULL, 5, NULL);
+                      4096, NULL, 5, NULL);
     if (tsk != pdPASS) {
         printf("ERROR: Failed to create announce task\n");
     }
@@ -1083,9 +1127,6 @@ extern "C" void app_main(void)
     if (tsk != pdPASS) {
         printf("WARN: JW01 init task failed — sensor reads may be zero\n");
     }
-#elif USE_SENSOR_BH1750
-    bh1750_init();
-    printf("BH1750 initialized\n");
 #elif USE_SENSOR_VIBRATION
     vibration_init();
     printf("Vibration sensor initialized\n");

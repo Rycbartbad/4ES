@@ -762,9 +762,8 @@ void espnow_comm_send_announce(void)
         s_announce_sent_count++;
         // Log periodically (every 10 announces ≈ 30s) to confirm sensor is broadcasting
         if (s_announce_sent_count % 10 == 0) {
-            ESP_LOGI(TAG, "announce sent x%d (name=%s, cap=%s)",
-                     s_announce_sent_count, g_espnow_module_name,
-                     g_espnow_module_capability);
+            ESP_LOGI(TAG, "announce sent x%d (name=%s)",
+                     s_announce_sent_count, g_espnow_module_name);
         }
     }
 }

@@ -25,6 +25,33 @@ config SENSOR_MODULE_NAME
         Master uses this to present module info in list_peers().
         Example: "kitchen_temp", "living_light", "garden_moisture"
 
+choice SENSOR_ACQUISITION_PROFILE
+    prompt "Sensor acquisition profile"
+    default SENSOR_ACQUISITION_NONE
+    depends on DEVICE_ROLE_SENSOR
+    help
+        Select the physical sensor read by this submodule.
+
+config SENSOR_ACQUISITION_NONE
+    bool "Generic ADC / no dedicated sensor"
+
+config SENSOR_ACQUISITION_BH1750
+    bool "BH1750 ambient light sensor (I2C)"
+
+endchoice
+
+config BH1750_SDA_GPIO
+    int "BH1750 SDA GPIO"
+    default 8
+    range 0 48
+    depends on SENSOR_ACQUISITION_BH1750
+
+config BH1750_SCL_GPIO
+    int "BH1750 SCL GPIO"
+    default 9
+    range 0 48
+    depends on SENSOR_ACQUISITION_BH1750
+
 choice SENSOR_ACTUATOR_PROFILE
     prompt "Actuator profile"
     default SENSOR_ACTUATOR_BUZZER

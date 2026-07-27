@@ -10,12 +10,29 @@ static void test_capability_measurement_classification(void)
     TEST_ASSERT(ui_sensor_capability_has_measurements(
         "JW01 air sensor: remote_read returns [co2,tvoc,ch2o]."));
     TEST_ASSERT(ui_sensor_capability_has_measurements(
+        "BH1750 Light Sensor: Returns 1 value: [lux]."));
+    TEST_ASSERT(ui_sensor_capability_has_measurements(
         "Generic ADC Sensor: reads analog voltages"));
     TEST_ASSERT(!ui_sensor_capability_has_measurements(
         "Doorbell: GPIO4 passive buzzer. Use buzzer_beep(id,count)."));
     TEST_ASSERT(!ui_sensor_capability_has_measurements(
         "Servo module: GPIO4 50Hz PWM servo."));
     TEST_ASSERT(!ui_sensor_capability_has_measurements(NULL));
+    TEST_PASS();
+}
+
+static void test_bh1750_metric_metadata(void)
+{
+    TEST("Sensor detail: BH1750 value receives illuminance metadata");
+
+    ui_metric_meta_t illuminance = {};
+    ui_sensor_metric_meta(
+        "BH1750 Light Sensor: Returns 1 value: [lux].",
+        0, &illuminance);
+
+    TEST_ASSERT_STR_EQUAL(illuminance.label, "Illuminance");
+    TEST_ASSERT_STR_EQUAL(illuminance.unit, "lux");
+    TEST_ASSERT(!illuminance.binary);
     TEST_PASS();
 }
 
@@ -117,6 +134,7 @@ void test_ui_sensor_model(void)
 {
     test_capability_measurement_classification();
     test_dht11_metric_metadata();
+    test_bh1750_metric_metadata();
     test_binary_and_unknown_metric_metadata();
     test_history_keeps_only_successful_recent_values();
     test_history_overwrites_oldest_sample_at_capacity();

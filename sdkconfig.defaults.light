@@ -1,0 +1,12 @@
+# ESP-LEGO BH1750 ambient-light submodule profile.
+# This sensor is connected to a dedicated ESP32-S3, not the Master board.
+# Combine with sdkconfig.defaults and sdkconfig.defaults.sensor.
+CONFIG_DEVICE_ROLE_SENSOR=y
+# CONFIG_DEVICE_ROLE_MASTER is not set
+CONFIG_IDF_TARGET="esp32s3"
+# CONFIG_WEB_CONSOLE_ENABLED is not set
+CONFIG_SENSOR_MODULE_NAME="light"
+CONFIG_SENSOR_ACQUISITION_BH1750=y
+CONFIG_BH1750_SDA_GPIO=8
+CONFIG_BH1750_SCL_GPIO=9
+CONFIG_SENSOR_ACTUATOR_NONE=y
