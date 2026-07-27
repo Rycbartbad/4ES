@@ -67,6 +67,20 @@ static esp_err_t hw_adc_init_once(void)
 int hw_adc_read(uint8_t pin)
 {
     adc_channel_t channel;
+#if CONFIG_IDF_TARGET_ESP32C3
+    // ESP32-C3 has ADC1 channels on GPIO 0-4 only
+    switch (pin) {
+        case 0:  channel = ADC_CHANNEL_0; break;
+        case 1:  channel = ADC_CHANNEL_1; break;
+        case 2:  channel = ADC_CHANNEL_2; break;
+        case 3:  channel = ADC_CHANNEL_3; break;
+        case 4:  channel = ADC_CHANNEL_4; break;
+        default:
+            ESP_LOGW(TAG, "ADC pin %u not available on ESP32-C3 (only GPIO0-4), using ch0", pin);
+            channel = ADC_CHANNEL_0;
+            break;
+    }
+#else
     // ESP32-S3 has ADC1 channels on GPIO 1-10
     switch (pin) {
         case 1:  channel = ADC_CHANNEL_0; break;
@@ -84,6 +98,7 @@ int hw_adc_read(uint8_t pin)
             channel = ADC_CHANNEL_0;
             break;
     }
+#endif
 
     if (hw_adc_init_once() != ESP_OK) {
         return 0;
