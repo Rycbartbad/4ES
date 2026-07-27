@@ -77,7 +77,7 @@ The `+` operator concatenates strings with numbers and booleans. For example,
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `remote_read(id)` | Read remote sensor value by module ID (number) or name (string) | number |
+| `remote_read(device)` | Read a remote sensor by stable name/type (string); numeric IDs are legacy-only | number |
 | `remote_read_avg(id_list)` | Average of multiple remote sensors. Pass IDs as comma-separated string e.g. `"1,2,3"` | number |
 | `remote_read_max(id_list)` | Maximum of multiple remote sensors | number |
 | `remote_read_min(id_list)` | Minimum of multiple remote sensors | number |
@@ -95,39 +95,38 @@ The `+` operator concatenates strings with numbers and booleans. For example,
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `buzzer_beep(id, count)` | Make a remote buzzer beep `count` times | number |
-| `buzzer_note(id, note, dur)` | Play one remote buzzer note. Useful notes: 0=C4, 12=C5, 19=G5, 24=C6, 36=rest. `dur` is milliseconds. | number |
-| `buzzer_song(id, song)` | Play a preset remote buzzer song: 0=twinkle, 1=birthday, 2=jingle. | number |
+| `buzzer_beep(device, count)` | Make a remote buzzer beep `count` times | number |
+| `buzzer_note(device, note, dur)` | Play one remote buzzer note. Useful notes: 0=C4, 12=C5, 19=G5, 24=C6, 36=rest. `dur` is milliseconds. | number |
+| `buzzer_song(device, song)` | Play a preset remote buzzer song: 0=twinkle, 1=birthday, 2=jingle. | number |
 
 For "make the buzzer beep twice" / "蜂鸣器叫两声", generate:
 
 ```c
-buzzer_beep(1,2);
+buzzer_beep("buzzer",2);
 ```
 
-Use a listed buzzer-capable peer id or name when available. Do not emit raw
-hex command IDs such as `0x0013`; the script lexer accepts decimal numbers.
+Use a listed buzzer-capable peer's quoted stable name when available.
 
 ### Remote Servo
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `servo_write(id, angle)` | Set a remote servo angle. Clamp angle to 0-180 degrees. | number |
-| `servo_sweep(id, from, to, step, delay)` | Sweep a remote servo between angles. `delay` is milliseconds between steps. | number |
+| `servo_write(device, angle)` | Set a remote servo angle. Clamp angle to 0-180 degrees. | number |
+| `servo_sweep(device, from, to, step, delay)` | Sweep a remote servo between angles. `delay` is milliseconds between steps. | number |
 
 For "turn the servo to 90 degrees" / "舵机转到90度", generate:
 
 ```c
-servo_write(1,90);
+servo_write("servo",90);
 ```
 
 For a generic sweep request, generate:
 
 ```c
-servo_sweep(1,0,180,15,200);
+servo_sweep("servo",0,180,15,200);
 ```
 
-Use a listed servo-capable peer id or name when available.
+Use a listed servo-capable peer's quoted stable name when available.
 
 For combined actuator requests, keep every requested actuator action. Do not
 drop buzzer actions when the prompt also mentions a servo. Since scripts run
@@ -161,28 +160,28 @@ print(servo_write("servo",90));
 
 | Function | Description | Returns |
 |----------|-------------|---------|
-| `pump_write(id, duration_ms)` | Control a remote water pump via MOSFET switch. `duration_ms=0` turns off immediately; `1..30000` runs for a finite duration and then turns off automatically. | number |
+| `pump_write(device, duration_ms)` | Control a remote water pump via MOSFET switch. `duration_ms=0` turns off immediately; `1..30000` runs for a finite duration and then turns off automatically. | number |
 
 For "turn on the pump for 5 seconds" / "打开水泵5秒" / "水泵开5秒", generate:
 
 ```c
-pump_write(1, 5000);
+pump_write("pump", 5000);
 ```
 
 For "turn off the pump" / "关水泵" / "停止抽水", generate:
 
 ```c
-pump_write(1, 0);
+pump_write("pump", 0);
 ```
 
 For a pump request without a duration, choose a short finite safe run. Never
 generate an indefinite pump command:
 
 ```c
-pump_write(1, 5000);
+pump_write("pump", 5000);
 ```
 
-Use a listed pump-capable peer id or name when available.
+Use a listed pump-capable peer's quoted stable name when available.
 
 ### List Operations
 
@@ -193,26 +192,26 @@ Use a listed pump-capable peer id or name when available.
 | `list_set(list, index, val)` | Set element at index (0-based) | void |
 | `list_len(list)` | Get the current length of the list | number |
 
-> **Device addressing**: Functions that accept a device ID (`remote_read`, `espnow_send`, `peer_online`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `servo_write`, `servo_sweep`, `pump_write`) support both numeric IDs and string names. Examples: `remote_read(1)` and `remote_read("kitchen_temp")` are both valid.
+> **Device addressing**: The runtime still accepts numeric IDs for backward compatibility with old scripts. Every newly generated remote-device call must use a quoted stable peer name or type word because discovery IDs can change when devices reconnect. The interpreter additionally rejects a typed control command when the resolved peer type does not match the command.
 
 ## Device Resolution (resolve vague references yourself)
 
 Users usually name a device only by its **type** or **function** and give **no id** — e.g. `舵机`(servo), `蜂鸣器`/`门铃`/`喇叭`(buzzer), `水泵`/`抽水`(pump), `灯`(light), `传感器`/`温度`/`湿度`/`光照`/`气体`/`雨`(sensor). This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.
 
-- **How to resolve**: every online device is tagged with `type=` (e.g. `servo`, `buzzer`, `sensor`, or a specific sensor kind like `sensor,temperature,humidity`). Match the user's word to a device by its **type** first, then by **name**, then by **capabilities** text, and call the builtin with that device's id or name.
+- **How to resolve**: every online device is tagged with `type=` (e.g. `servo`, `buzzer`, `sensor`, or a specific sensor kind like `sensor,temperature,humidity`). Match the user's word by **type** first, then by **name**, then by **capabilities**, and call the builtin with the device's quoted stable name.
 - **Synonyms**: `舵机`/`伺服`/`servo` → `type=servo` (has `servo_write`); `蜂鸣器`/`门铃`/`喇叭`/`beeper`/`buzzer`/`doorbell` → `type=buzzer` (has `buzzer_beep`); `水泵`/`抽水`/`泵`/`pump` → `type=pump` (has `pump_write`); `传感器`/`sensor` and any measured quantity (`温度`/`湿度`/`光照`/`气体`/`co2`/`雨`/`振动`) → `type=sensor`.
 - **One match** → use it even when the request is vague (`舵机转一下`, `蜂鸣器响两声`, `看看传感器`).
 - **Several matches** → pick the one whose name the user mentioned; otherwise the **first** matching device, and add `print("using <name>");` so the user sees which one was chosen. Do not ask to clarify.
-- **No device list** → still emit the most likely builtin call using `id=1`.
-- **Vague verbs**: for a SENSOR, `怎么样`/`看看`/`状态`/`读一下`/`现在多少` means read and print it — `print(read_sensor(<id>))`. For an ACTUATOR, a vague `怎么样`/`试一下`/`动一下`/`测试` means ONE short safe demo: servo → `servo_sweep(<id>,0,180,15,200)`, buzzer → `buzzer_beep(<id>,2)`, pump → `pump_write(<id>, 2000)`.
-- When you pick a device, prefer calling it by its **name** string (e.g. `servo_write("servo",90)`) so the mapping is explicit.
+- **No device list** → use the quoted canonical type word, never a guessed numeric ID.
+- **Vague verbs**: read a sensor with `print(read_sensor("sensor"))`; use one short safe actuator demo such as `servo_sweep("servo",0,180,15,200)`, `buzzer_beep("buzzer",2)`, or `pump_write("pump",2000)`.
+- Numeric module IDs are transient discovery data and must not appear in any newly generated script.
 
 ## Function Calling (tools)
 
 When the application provides a `tools` schema (DeepSeek/OpenAI function calling), prefer emitting a **tool call** over writing a script for simple device actions:
 
 - Tools available: `servo_write`, `servo_sweep`, `buzzer_beep`, `buzzer_note`, `buzzer_song`, `pump_write`, `read_sensor`, and a catch-all `run_script(script)` for complex, multi-step, conditional or looping logic.
-- Pass the `device` argument **verbatim** — the user's id, exact name, or a type word (`servo`/`舵机`/`温度`/...). Do NOT guess a concrete device when the reference is ambiguous; the master resolves it and, if several devices of that type are online, asks the user to pick. This is by design, so keep the reference as given.
+- Pass the `device` argument as a **string** containing the user's exact name or a type word (`servo`, `pump`, `sensor`, etc.). Do not emit a numeric ID. If several matching devices are online, the master asks the user to pick and inserts the selected stable name.
 - Use `run_script` only when the request genuinely needs loops/conditions/sequencing that a single tool call cannot express.
 - If no tools are provided (older/local endpoints), fall back to writing a raw script as described above.
 

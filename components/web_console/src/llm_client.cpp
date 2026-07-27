@@ -584,7 +584,7 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- list_peers() -> string       list all online devices as formatted text\n"
         "- peer_count() -> number       number of currently online peer devices\n"
         "- peer_online(id) -> bool      check if peer id/name is online\n"
-        "- remote_read(id)->num|list  read sensor data from remote module (id=number or name; returns single number for 1-sensor modules, or a list for multi-sensor modules; submodule firmware decides which pins to read)\n"
+        "- remote_read(device)->num|list  read sensor data using a stable quoted name/type (legacy numeric IDs are accepted by the runtime but must not be generated)\n"
         "- remote_read_avg(ids)->num    read multiple remote sensors, return average (ids=comma-separated string like \"1,2,3\")\n"
         "- remote_read_max(ids)->num    read multiple remotes, return max value\n"
         "- remote_read_min(ids)->num    read multiple remotes, return min value\n"
@@ -630,16 +630,15 @@ int llm_client_build_system_prompt(char* buf, int max_len)
         "- For repeated timed actions, emit an explicit sequence using sleep(ms); the script runtime is sequential, not concurrent.\n"
         "- If the user gives a finite servo angle sequence, do not wrap it in while unless they explicitly ask to repeat or loop.\n"
         "- Chinese '蜂鸣器每隔一秒叫一声' means add buzzer_beep(...,1) at t=0 and then every 1000ms during the finite action sequence.\n"
-        "- Prefer peer names such as \"servo\" and \"doorbell\" for combined actuator scripts when those names are listed online.\n"
-        "- If only one online peer is listed, use id=1 for buzzer or servo requests.\n"
-        "- For 'make the buzzer beep twice', '蜂鸣器叫两声', or 'doorbell ring twice', output exactly: buzzer_beep(1,2);\n\n"
+        "- Always address every remote device by its stable quoted peer name or type, never by a numeric module ID.\n"
+        "- For 'make the buzzer beep twice', '蜂鸣器叫两声', or 'doorbell ring twice', output exactly: buzzer_beep(\"buzzer\",2);\n\n"
         "Buzzer examples:\n"
-        "- User asks 'make the buzzer beep twice' or '蜂鸣器叫两声': buzzer_beep(1,2);\n"
-        "- If a listed online device has Buzzer capability, use that device id/name.\n"
+        "- User asks 'make the buzzer beep twice' or '蜂鸣器叫两声': buzzer_beep(\"buzzer\",2);\n"
+        "- If a listed online device has Buzzer capability, use its quoted name.\n"
         "- Do not use raw hex command IDs like 0x0013; the script language only accepts decimal numbers.\n\n"
         "Servo examples:\n"
-        "- User asks 'turn the servo to 90 degrees': servo_write(1,90);\n"
-        "- User asks 'sweep the servo': servo_sweep(1,0,180,15,200);\n"
+        "- User asks 'turn the servo to 90 degrees': servo_write(\"servo\",90);\n"
+        "- User asks 'sweep the servo': servo_sweep(\"servo\",0,180,15,200);\n"
         "- User asks 'move servo 90,75,105,90 every 500ms and beep every second': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n"
         "- User asks '让 servo 舵机先转到 90 度，然后转到 75 度，再转到 105 度，最后回到 90 度，每一步间隔 500 毫秒。同时让蜂鸣器每隔一秒叫一声': print(servo_write(\"servo\",90)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",75)); sleep(500); print(servo_write(\"servo\",105)); print(buzzer_beep(\"doorbell\",1)); sleep(500); print(servo_write(\"servo\",90));\n\n"
         "Pump examples:\n"
@@ -653,12 +652,12 @@ int llm_client_build_system_prompt(char* buf, int max_len)
     prompt_append(buf, max_len, &pos,
         "Device resolution (IMPORTANT — resolve vague references yourself):\n"
         "- Users usually name a device only by its TYPE or FUNCTION and give NO id. This is normal. NEVER ask the user for an id and NEVER refuse because an id is missing.\n"
-        "- Each online device below is tagged with canonical types. Match the user's word by type FIRST, then by name, then by capabilities text; call the builtin with that device's id or name.\n"
+        "- Each online device below is tagged with canonical types. Match the user's word by type FIRST, then by name, then by capabilities text; call the builtin with its quoted stable name.\n"
         "- If exactly ONE online device matches the type, use it even when the request is vague ('舵机转一下', '蜂鸣器响两声', '看看传感器').\n"
         "- If SEVERAL devices match the same type, pick the one whose name the user mentioned; otherwise the FIRST matching device below, and add print(\"using <name>\"); so the user sees which device was chosen. Never ask to clarify.\n"
-        "- If NO device list is available, still emit the most likely builtin call using id=1.\n"
-        "- Vague verbs: for a SENSOR, '怎么样'/'看看'/'状态'/'读一下'/'现在多少' means read and print it, e.g. print(read_sensor(<id>)). For an ACTUATOR, a vague '怎么样'/'试一下'/'动一下'/'测试' means perform ONE short safe demo action: a servo -> servo_sweep(<id>,0,180,15,200); a buzzer -> buzzer_beep(<id>,2); a pump -> pump_write(<id>,2000).\n"
-        "- When you pick a device, prefer calling it by its name string (e.g. servo_write(\"servo\",90)) so the mapping is explicit.\n\n");
+        "- If NO device list is available, use the quoted canonical type word, never a guessed numeric ID.\n"
+        "- Vague sensor requests mean read and print it, e.g. print(read_sensor(\"sensor\")). Vague actuator tests mean ONE short safe demo: servo_sweep(\"servo\",0,180,15,200), buzzer_beep(\"buzzer\",2), or pump_write(\"pump\",2000).\n"
+        "- Numeric module IDs are transient discovery data. Never put them in any newly generated script.\n\n");
 
     size_t type_count = 0;
     const DeviceTypeSpec* type_specs =
@@ -773,10 +772,7 @@ static void llm_add_tools(cJSON* root)
             cJSON* property = cJSON_CreateObject();
             if (property == NULL) continue;
             if (arg->kind == CONTROL_ARG_DEVICE) {
-                cJSON* types = cJSON_CreateArray();
-                cJSON_AddItemToArray(types, cJSON_CreateString("string"));
-                cJSON_AddItemToArray(types, cJSON_CreateString("number"));
-                cJSON_AddItemToObject(property, "type", types);
+                cJSON_AddStringToObject(property, "type", "string");
             } else {
                 cJSON_AddStringToObject(property, "type", "number");
                 cJSON_AddNumberToObject(property, "minimum",
@@ -879,35 +875,68 @@ static void fill_clarify_options(LlmClarify* clarify, const char* type)
     }
 }
 
-// Resolve a tool_call 'device' argument into a script literal.
-//   number            -> "2"
-//   exact peer name   -> "2"           (its id)
-//   unique type word  -> "2"           (the sole matching peer's id)
-//   ambiguous type    -> placeholder   (records candidates in `clarify`)
-//   otherwise         -> "\"raw\""     (runtime resolves or fails)
+static void string_arg_literal(const char* value, char* out, int out_len)
+{
+    if (!out || out_len <= 0) return;
+    if (out_len < 3) {
+        out[0] = '\0';
+        return;
+    }
+    int pos = 0;
+    out[pos++] = '"';
+    for (const char* p = value ? value : "";
+         *p && pos < out_len - 2; p++) {
+        if ((*p == '"' || *p == '\\') && pos < out_len - 3) {
+            out[pos++] = '\\';
+        }
+        out[pos++] = *p;
+    }
+    out[pos++] = '"';
+    out[pos] = '\0';
+}
+
+// Resolve a tool_call 'device' argument into a stable script literal.
+// Legacy numeric IDs are accepted only when they currently belong to the
+// expected device type, then immediately canonicalized to the peer name.
 static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
                                    char clarify_type[16],
                                    const char* expected_type,
                                    char* out, int out_len)
 {
+    const char* s = NULL;
     if (device && cJSON_IsNumber(device)) {
-        snprintf(out, out_len, "%g", device->valuedouble);
-        return;
+        double raw_id = device->valuedouble;
+        if (isfinite(raw_id) && raw_id >= 0 && raw_id <= 255 &&
+            floor(raw_id) == raw_id) {
+            bool conflict = false;
+            PeerEntry* numbered =
+                peer_mgr_find_by_id((uint8_t)raw_id, &conflict);
+            if (numbered && !conflict &&
+                peer_mgr_matches_type(numbered, expected_type)) {
+                string_arg_literal(numbered->name, out, out_len);
+                return;
+            }
+        }
+        s = expected_type;
     }
 
-    const char* s =
-        (device && cJSON_IsString(device)) ? device->valuestring : NULL;
+    if (!s && device && cJSON_IsString(device)) {
+        s = device->valuestring;
+    }
     if (!s || !s[0]) s = expected_type;
     if (!s || !s[0]) {
-        snprintf(out, out_len, "1");
+        string_arg_literal("", out, out_len);
         return;
     }
 
     bool conflict = false;
     PeerEntry* p = peer_mgr_find_by_name(s, &conflict);
-    if (p && !conflict) {
-        snprintf(out, out_len, "%u", (unsigned)p->module_id);
+    if (p && !conflict && peer_mgr_matches_type(p, expected_type)) {
+        string_arg_literal(p->name, out, out_len);
         return;
+    }
+    if (p && !peer_mgr_matches_type(p, expected_type)) {
+        s = expected_type;
     }
 
     const char* type = peer_mgr_type_from_query(s);
@@ -915,7 +944,7 @@ static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
         int count = 0;
         PeerEntry* tp = peer_mgr_find_by_type(type, &count);
         if (count == 1 && tp) {
-            snprintf(out, out_len, "%u", (unsigned)tp->module_id);
+            string_arg_literal(tp->name, out, out_len);
             return;
         }
         if (count > 1) {
@@ -939,13 +968,13 @@ static void resolve_device_literal(cJSON* device, LlmClarify* clarify,
             }
             // A second, different ambiguous type in the same request: degrade
             // to the type word so the interpreter picks the first + logs it.
-            snprintf(out, out_len, "\"%s\"", s);
+            string_arg_literal(s, out, out_len);
             return;
         }
         // count == 0 -> no matching device online; keep the raw reference
     }
 
-    snprintf(out, out_len, "\"%s\"", s);
+    string_arg_literal(s, out, out_len);
 }
 
 // Compile one tool_call into a DSL statement appended to `script`.

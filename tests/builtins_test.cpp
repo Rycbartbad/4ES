@@ -353,6 +353,54 @@ static void test_bif_pump_write_payload_and_limits(void) {
     TEST_PASS();
 }
 
+static void test_control_commands_reject_wrong_device_type(void) {
+    TEST("Control commands reject a numeric ID owned by another device type");
+    peer_mgr_init();
+    const uint8_t sensor_mac[6] = {0x10, 0, 0, 0, 0, 1};
+    const uint8_t pump_mac[6]   = {0x10, 0, 0, 0, 0, 2};
+    const uint8_t servo_mac[6]  = {0x10, 0, 0, 0, 0, 3};
+    const uint8_t buzzer_mac[6] = {0x10, 0, 0, 0, 0, 4};
+    peer_mgr_insert(sensor_mac, 1, "dht11");
+    peer_mgr_insert(pump_mac, 7, "pump");
+    peer_mgr_insert(servo_mac, 8, "servo");
+    peer_mgr_insert(buzzer_mac, 9, "buzzer");
+
+    mock_send_cmd_reset();
+    Value pump_wrong[] = {v_num(1), v_num(5000)};
+    Value r = call_bif("pump_write", pump_wrong, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value pump_wrong_name[] = {v_str("dht11"), v_num(5000)};
+    r = call_bif("pump_write", pump_wrong_name, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value servo_wrong[] = {v_num(1), v_num(90)};
+    r = call_bif("servo_write", servo_wrong, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value buzzer_wrong[] = {v_num(1), v_num(1)};
+    r = call_bif("buzzer_beep", buzzer_wrong, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(0, g_mock_send_cmd_calls);
+
+    Value sensor_wrong[] = {v_num(7)};
+    r = call_bif("read_sensor", sensor_wrong, 1);
+    TEST_ASSERT_EQUAL_DOUBLE(-1.0, r.num, 0.001);
+
+    mock_send_cmd_reset();
+    Value pump_by_name[] = {v_str("pump"), v_num(5000)};
+    r = call_bif("pump_write", pump_by_name, 2);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, r.num, 0.001);
+    TEST_ASSERT_EQUAL_INT(1, g_mock_send_cmd_calls);
+    TEST_ASSERT_EQUAL_INT(7, g_mock_send_cmd_module_id);
+
+    peer_mgr_init();
+    TEST_PASS();
+}
+
 static void test_bif_arg_validation(void) {
     TEST("Builtin: argument validation (missing required args)");
     // espnow_send with 0 args should return -1
@@ -405,6 +453,7 @@ void test_builtins(void) {
     test_control_command_catalog();
     test_control_command_formats_dsl();
     test_bif_pump_write_payload_and_limits();
+    test_control_commands_reject_wrong_device_type();
     test_bif_arg_validation();
     test_bif_list_get_oob();
 }

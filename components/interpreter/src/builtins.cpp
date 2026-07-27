@@ -161,32 +161,32 @@ static const BuiltinEntry s_builtin_entries[] = {
 
 static const ControlArgSpec kReadSensorArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "sensor id, exact name, or type word"},
+     "stable sensor name or type word"},
 };
 static const ControlArgSpec kBuzzerBeepArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "buzzer id, exact name, or type word"},
+     "stable buzzer name or type word"},
     {"count", CONTROL_ARG_NUMBER, 1, 20, "number of beeps"},
 };
 static const ControlArgSpec kBuzzerNoteArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "buzzer id, exact name, or type word"},
+     "stable buzzer name or type word"},
     {"note", CONTROL_ARG_NUMBER, 0, 36, "note number"},
     {"dur", CONTROL_ARG_NUMBER, 1, 30000, "duration in milliseconds"},
 };
 static const ControlArgSpec kBuzzerSongArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "buzzer id, exact name, or type word"},
+     "stable buzzer name or type word"},
     {"song", CONTROL_ARG_NUMBER, 0, 2, "preset song number"},
 };
 static const ControlArgSpec kServoWriteArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "servo id, exact name, or type word"},
+     "stable servo name or type word"},
     {"angle", CONTROL_ARG_NUMBER, 0, 180, "angle in degrees"},
 };
 static const ControlArgSpec kServoSweepArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "servo id, exact name, or type word"},
+     "stable servo name or type word"},
     {"from", CONTROL_ARG_NUMBER, 0, 180, "starting angle"},
     {"to", CONTROL_ARG_NUMBER, 0, 180, "ending angle"},
     {"step", CONTROL_ARG_NUMBER, 1, 180, "angle step"},
@@ -195,7 +195,7 @@ static const ControlArgSpec kServoSweepArgs[] = {
 };
 static const ControlArgSpec kPumpWriteArgs[] = {
     {"device", CONTROL_ARG_DEVICE, 0, 0,
-     "pump id, exact name, or type word"},
+     "stable pump name or type word"},
     {"duration_ms", CONTROL_ARG_NUMBER, 0, 30000,
      "0 turns off; 1..30000 runs for a finite duration"},
 };
@@ -390,6 +390,12 @@ static bool resolve_module_id_arg(const char* func,
     if (!arg || !module_id_out) return false;
 
     if (arg->type == VAL_NUM) {
+        if (!isfinite(arg->num) || arg->num < 0 || arg->num > 255 ||
+            floor(arg->num) != arg->num) {
+            ESP_LOGW(TAG, "%s(): module id must be an integer from 0 to 255",
+                     func);
+            return false;
+        }
         *module_id_out = (uint8_t)arg->num;
         return true;
     }
@@ -444,6 +450,38 @@ static bool resolve_module_id_arg(const char* func,
     return false;
 }
 
+static bool validate_control_device_type(const ControlCommandSpec* spec,
+                                         const Value* args,
+                                         int arg_count,
+                                         ExecutionContext* ctx)
+{
+    if (!spec || !args || arg_count < 1 || spec->arg_count < 1 ||
+        spec->args[0].kind != CONTROL_ARG_DEVICE) {
+        return true;
+    }
+
+    uint8_t module_id = 0;
+    if (!resolve_module_id_arg(spec->dsl_name, &args[0], ctx, &module_id)) {
+        return false;
+    }
+
+    bool conflict = false;
+    PeerEntry* peer = peer_mgr_find_by_id(module_id, &conflict);
+    if (conflict || (peer && !peer_mgr_matches_type(peer, spec->device_type))) {
+        ESP_LOGW(TAG,
+                 "%s(): device id=%u is not an unambiguous %s (actual=%s)",
+                 spec->dsl_name, module_id, spec->device_type,
+                 peer ? peer->name : "conflict");
+        if (ctx) {
+            ctx->constraint_violated = true;
+            ctx->violation_msg = "Control command device type mismatch";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 // ====================================================================
 // call_builtin_by_name — dispatched by interpreter.cpp
 // ====================================================================
@@ -469,6 +507,10 @@ Value call_builtin_by_name(const char* name, const Value* args,
     for (size_t i = 0;
          i < sizeof(s_control_commands) / sizeof(s_control_commands[0]); i++) {
         if (strcmp(name, s_control_commands[i].dsl_name) == 0) {
+            if (!validate_control_device_type(&s_control_commands[i],
+                                              local_args, n, ctx)) {
+                return bval_num(-1);
+            }
             return s_control_commands[i].handler(local_args, n, ctx);
         }
     }

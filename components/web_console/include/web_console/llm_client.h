@@ -25,8 +25,8 @@ extern "C" {
 // When a device reference matches several online peers of the same type, it
 // cannot be resolved on the master without input, so the call returns a
 // CLARIFY result: the generated script contains a placeholder token where the
-// device id belongs, plus the list of candidate devices for the UI to offer.
-// The UI substitutes the chosen id into the placeholder and injects locally
+// stable device name belongs, plus the list of candidate devices for the UI.
+// The UI substitutes the chosen quoted name and injects locally
 // via /api/script — no second LLM round-trip.
 // ---------------------------------------------------------------------------
 
@@ -120,8 +120,8 @@ int llm_client_call(const char* ssid, const char* pass,
  * On return 0, inspect clarify_out->kind:
  *   - LLM_RESULT_SCRIPT : script_out is ready to inject.
  *   - LLM_RESULT_CLARIFY: script_out contains clarify_out->placeholder where a
- *                         device id must go; present clarify_out->options to
- *                         the user and substitute the chosen id.
+ *                         stable device name must go; present the options and
+ *                         substitute the chosen quoted name.
  *
  * @param clarify_out Out param (must be non-NULL) for the clarify result.
  * @return 0 on success, -1 on error.
