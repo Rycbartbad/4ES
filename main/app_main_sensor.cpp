@@ -495,7 +495,7 @@ static bool pump_on_for(uint16_t duration_ms)
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
 
-#define DHT11_PIN GPIO_NUM_13
+#define DHT11_PIN GPIO_NUM_7
 
 static bool dht11_read(double* temperature, double* humidity) {
     uint8_t data[5] = {0, 0, 0, 0, 0};
@@ -596,8 +596,8 @@ static double raindrop_read() {
 #if USE_SENSOR_BH1750
 #include "driver/i2c.h"
 
-#define I2C_MASTER_SCL_IO           ((gpio_num_t)CONFIG_BH1750_SCL_GPIO)
-#define I2C_MASTER_SDA_IO           ((gpio_num_t)CONFIG_BH1750_SDA_GPIO)
+#define I2C_MASTER_SCL_IO           GPIO_NUM_9
+#define I2C_MASTER_SDA_IO           GPIO_NUM_8
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define BH1750_SENSOR_ADDR          0x23
